@@ -1,4 +1,4 @@
-// ITM-DATA-API\src\wafer\wafer.service.ts
+// ITM-Data-API/src/wafer/wafer.service.ts
 import {
   Injectable,
   InternalServerErrorException,
@@ -130,6 +130,8 @@ export class WaferService {
 
     if (column === 'lotids') colName = 'lotid';
     if (column === 'cassettercps') colName = 'cassettercp';
+    // [수정] Stage RCP 필터 매핑 추가
+    if (column === 'stagercps' || column === 'stageRcps') colName = 'stagercp';
     if (column === 'stagegroups') colName = 'stagegroup';
     if (column === 'films') colName = 'film';
     if (column === 'waferids') colName = 'waferid';
@@ -169,7 +171,6 @@ export class WaferService {
       return result
         .map((r) => {
           if (r.val === null || r.val === undefined) return '';
-          // [린트 해결] 객체 여부를 체크하여 안전하게 문자열 변환
           if (typeof r.val === 'object') return JSON.stringify(r.val);
           return String(r.val);
         })
@@ -288,7 +289,7 @@ export class WaferService {
         ${selectColumns}
       FROM public.plg_onto_spectrum s
       JOIN public.plg_wf_flat f 
-        ON s."lotid" = f."lotid 
+        ON s."lotid" = f."lotid" 
         AND s."waferid" = f."waferid"::varchar 
         AND s."point" = f."point"
       WHERE s."lotid" = $1
@@ -641,7 +642,6 @@ export class WaferService {
         throw checkErr;
       }
 
-      // [수정] 하드코딩 경로 제거 및 환경 변수 우선 사용
       const popplerBinPath = process.env.POPPLER_BIN_PATH; 
       
       if (!popplerBinPath) {
@@ -1199,24 +1199,28 @@ export class WaferService {
     if (!p.eqpId) return null;
     let sql = `WHERE eqpid = '${String(p.eqpId)}'`;
 
+    // [수정] 통계 조회를 위해 servTs 범위를 좁힘 (±24시간 -> ±2초)
+    // 개별 wafer 측정값 조회가 목적이므로 24시간 범위는 데이터가 섞일 위험이 있음
     if (p.servTs) {
-      const ts =
-        typeof p.servTs === 'string' ? p.servTs : p.servTs.toISOString();
-      sql += ` AND serv_ts >= '${ts}'::timestamp - interval '24 hours'`;
-      sql += ` AND serv_ts <= '${ts}'::timestamp + interval '24 hours'`;
-    }
-
-    if (p.startDate) {
-      const s =
-        typeof p.startDate === 'string'
-          ? p.startDate
-          : p.startDate.toISOString();
-      sql += ` AND serv_ts >= '${s}'`;
-    }
-    if (p.endDate) {
-      const e =
-        typeof p.endDate === 'string' ? p.endDate : p.endDate.toISOString();
-      sql += ` AND serv_ts <= '${e}'`;
+      const ts = typeof p.servTs === 'string' ? new Date(p.servTs) : p.servTs;
+      const tsIso = ts.toISOString();
+      sql += ` AND serv_ts >= '${tsIso}'::timestamp - interval '2 second'`;
+      sql += ` AND serv_ts <= '${tsIso}'::timestamp + interval '2 second'`;
+    } 
+    // servTs가 없고 날짜 범위만 있는 경우 (일반 조회용)
+    else {
+      if (p.startDate) {
+        const s =
+          typeof p.startDate === 'string'
+            ? p.startDate
+            : p.startDate.toISOString();
+        sql += ` AND serv_ts >= '${s}'`;
+      }
+      if (p.endDate) {
+        const e =
+          typeof p.endDate === 'string' ? p.endDate : p.endDate.toISOString();
+        sql += ` AND serv_ts <= '${e}'`;
+      }
     }
 
     if (p.lotId) sql += ` AND lotid = '${String(p.lotId)}'`;
