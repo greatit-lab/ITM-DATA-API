@@ -1,124 +1,79 @@
 // ITM-Data-API/src/auth/auth.service.ts
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma.service';
+import { LoginDto } from './auth.interface';
 
 @Injectable()
 export class AuthService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private jwtService: JwtService,
+  ) {}
 
-  async checkWhitelist(compId?: string, deptId?: string) {
-    // 1. Company ID 확인
-    if (compId) {
-      const found = await this.prisma.refAccessCode.findFirst({
-        where: { compid: compId, isActive: 'Y' },
-      });
-      if (found) return { isActive: 'Y' };
+  // 1. 로그인 (AD 연동 전 임시 로직 또는 DB 기반 로그인)
+  async login(loginDto: LoginDto) {
+    const { username, password } = loginDto;
+
+    // [TODO] 실제 AD 인증 로직으로 교체 필요
+    // 현재는 DB의 sys_user 테이블이나 하드코딩된 로직을 사용할 수 있음
+    // 여기서는 간단히 사용자 존재 여부만 체크하고 토큰 발급 (개발용)
+    
+    // 예시: 관리자 계정 하드코딩
+    if (username === 'admin' && password === 'admin') {
+      return this.generateToken(username, 'ADMIN');
     }
-    // 2. Dept ID 확인
-    if (deptId) {
-      const found = await this.prisma.refAccessCode.findFirst({
-        where: { deptid: deptId, isActive: 'Y' },
-      });
-      if (found) return { isActive: 'Y' };
+
+    // DB 사용자 조회 (비밀번호 검증 로직 추가 필요)
+    const user = await this.prisma.sysUser.findUnique({
+      where: { loginId: username },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('Invalid credentials');
     }
-    return { isActive: 'N' };
-  }
 
-  async syncUser(loginId: string) {
-    // 유저가 없으면 생성, 있으면 로그인 카운트 증가 등 업데이트
-    const user = await this.prisma.sysUser.upsert({
-      where: { loginId },
-      update: {
-        lastLoginAt: new Date(),
-        loginCount: { increment: 1 },
-      },
-      create: {
-        loginId,
-        loginCount: 1,
-      },
-    });
-    return user;
-  }
+    // [TODO] 비밀번호 해시 비교 로직 추가
+    // if (!bcrypt.compare(password, user.password)) ...
 
-  async checkAdmin(loginId: string) {
-    return this.prisma.cfgAdminUser.findUnique({
-      where: { loginId },
-      select: { role: true },
-    });
-  }
-
-  async checkGuest(loginId: string) {
-    const now = new Date();
-    return this.prisma.cfgGuestAccess.findFirst({
-      where: {
-        loginId,
-        validUntil: { gte: now },
-      },
-      select: { grantedRole: true },
-    });
-  }
-
-  async getGuestRequestStatus(loginId: string) {
-    return this.prisma.cfgGuestRequest.findFirst({
-      where: { loginId },
-      orderBy: { createdAt: 'desc' },
-      select: { status: true },
-    });
-  }
-
-  async getUserContext(loginId: string) {
-    const context = await this.prisma.sysUserContext.findUnique({
-      where: { loginId },
-      include: { sdwtInfo: true },
+    // 권한 조회 (Admin 테이블 확인)
+    const adminUser = await this.prisma.cfgAdminUser.findUnique({
+      where: { loginId: username },
     });
 
-    if (!context) return null;
+    const role = adminUser ? adminUser.role : 'USER';
 
+    return this.generateToken(username, role);
+  }
+
+  // 2. 토큰 생성
+  private generateToken(username: string, role: string) {
+    const payload = { username, role };
     return {
-      sdwtInfo: {
-        site: context.sdwtInfo.site,
-        sdwt: context.sdwtInfo.sdwt,
+      accessToken: this.jwtService.sign(payload),
+      user: {
+        username,
+        role,
       },
     };
   }
 
-  async saveUserContext(loginId: string, site: string, sdwt: string) {
-    // SDWT ID 찾기
-    const sdwtRef = await this.prisma.refSdwt.findFirst({
-      where: { site, sdwt },
+  // 3. 게스트 로그인 (요청 승인 여부 확인)
+  async guestLogin(loginDto: LoginDto) {
+    const { username } = loginDto;
+
+    const guestAccess = await this.prisma.cfgGuestAccess.findUnique({
+      where: { loginId: username },
     });
-    
-    if (!sdwtRef) {
-      throw new NotFoundException(`SDWT not found for site=${site}, sdwt=${sdwt}`);
+
+    if (!guestAccess) {
+      throw new UnauthorizedException('Guest access not granted or expired');
     }
 
-    return this.prisma.sysUserContext.upsert({
-      where: { loginId },
-      update: { lastSdwtId: sdwtRef.id },
-      create: {
-        loginId,
-        lastSdwtId: sdwtRef.id,
-      },
-    });
-  }
+    if (guestAccess.validUntil < new Date()) {
+      throw new UnauthorizedException('Guest access expired');
+    }
 
-  async getAccessCodes() {
-    return this.prisma.refAccessCode.findMany({
-      where: { isActive: 'Y' },
-      orderBy: { compid: 'asc' },
-    });
-  }
-
-  async createGuestRequest(data: any) {
-    // data: { loginId, deptCode, deptName, reason }
-    return this.prisma.cfgGuestRequest.create({
-      data: {
-        loginId: data.loginId,
-        deptCode: data.deptCode,
-        deptName: data.deptName,
-        reason: data.reason,
-        status: 'PENDING',
-      },
-    });
+    return this.generateToken(username, 'GUEST');
   }
 }
