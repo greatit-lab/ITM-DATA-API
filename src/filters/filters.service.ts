@@ -1,6 +1,7 @@
 // ITM-Data-API/src/filters/filters.service.ts
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class FiltersService {
@@ -8,26 +9,25 @@ export class FiltersService {
 
   // 1. Site 목록 조회 (RefSdwt 테이블 기준)
   async getSites() {
-    // DB에서 사용 중인(isUse='Y') Site 목록을 중복 제거하여 조회
+    // [수정] site는 필수 컬럼이므로 { not: null } 체크 제거
     const results = await this.prisma.refSdwt.findMany({
       select: { site: true },
       where: { 
-        site: { not: null },
-        isUse: 'Y' // 사용 여부 체크
+        isUse: 'Y' // 사용 여부만 체크
       },
       distinct: ['site'], // DISTINCT site
       orderBy: { site: 'asc' },
     });
 
-    // 객체 배열 [{site: 'A'}, {site: 'B'}] -> 문자열 배열 ['A', 'B']로 변환
-    return results.map((r) => r.site).filter((site) => site !== null);
+    // 객체 배열 -> 문자열 배열 변환
+    return results.map((r) => r.site);
   }
 
   // 2. SDWT 목록 조회 (RefSdwt 테이블 기준)
   async getSdwts(site?: string) {
-    const where: any = { 
-      isUse: 'Y',
-      sdwt: { not: null }
+    // [수정] sdwt는 필수 컬럼이므로 { not: null } 체크 제거
+    const where: Prisma.RefSdwtWhereInput = { 
+      isUse: 'Y' 
     };
     
     // Site가 선택된 경우 해당 Site에 속한 SDWT만 조회
@@ -42,6 +42,6 @@ export class FiltersService {
       orderBy: { sdwt: 'asc' },
     });
 
-    return results.map((r) => r.sdwt).filter((sdwt) => sdwt !== null);
+    return results.map((r) => r.sdwt);
   }
 }
