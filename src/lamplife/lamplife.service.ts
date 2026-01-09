@@ -1,27 +1,52 @@
 // ITM-Data-API/src/lamplife/lamplife.service.ts
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class LampLifeService {
   constructor(private prisma: PrismaService) {}
 
-  async getLampStatus(site: string, sdwt: string) {
+  // 1. 램프 데이터 조회
+  async getLampData(site?: string, sdwt?: string, eqpId?: string) {
+    const where: Prisma.EqpLampLifeWhereInput = {};
+
+    // 장비 필터링 조건 생성 (Site, SDWT)
+    if (site || sdwt || eqpId) {
+      where.equipment = {
+        sdwtRel: {
+          isUse: 'Y',
+          ...(site ? { site } : {}),
+        },
+        ...(sdwt ? { sdwt } : {}),
+        ...(eqpId ? { eqpid: eqpId } : {}),
+      };
+    }
+
     return this.prisma.eqpLampLife.findMany({
-      where: {
-        // [수정] site, sdwt 변수를 사용하여 장비 필터링 적용
+      where,
+      orderBy: { servTs: 'desc' },
+      include: {
         equipment: {
-          // sdwt 값이 있으면 필터링
-          ...(sdwt && { sdwt: sdwt }),
-          // site 값이 있으면 RefSdwt 관계를 통해 필터링
-          ...(site && {
+          select: {
+            eqpid: true,
+            model: true,
             sdwtRel: {
-              site: site
-            }
-          })
-        }
+              select: {
+                site: true,
+                sdwt: true,
+              },
+            },
+          },
+        },
       },
-      orderBy: { eqpid: 'asc' }
+    });
+  }
+
+  // 2. 램프 교체 이력 등록 (옵션)
+  async addLampHistory(data: Prisma.EqpLampLifeCreateInput) {
+    return this.prisma.eqpLampLife.create({
+      data,
     });
   }
 }
