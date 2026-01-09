@@ -7,31 +7,53 @@ import { Prisma } from '@prisma/client';
 export class InfraController {
   constructor(private readonly infraService: InfraService) {}
 
+  // --- 1. SDWT API ---
+
   @Get('sdwt')
-  async getSdwts() { return this.infraService.getSdwts(); }
+  async getSdwts() {
+    return this.infraService.getSdwts();
+  }
 
   @Post('sdwt')
-  async createSdwt(@Body() body: Prisma.RefSdwtCreateInput) { return this.infraService.createSdwt(body); }
+  async createSdwt(@Body() body: Prisma.RefSdwtCreateInput) {
+    return this.infraService.createSdwt(body);
+  }
 
   @Put('sdwt/:id')
-  async updateSdwt(@Param('id') id: string, @Body() body: Prisma.RefSdwtUpdateInput) {
+  async updateSdwt(
+    @Param('id') id: string,
+    @Body() body: Prisma.RefSdwtUpdateInput,
+  ) {
     return this.infraService.updateSdwt(id, body);
   }
 
   @Delete('sdwt/:id')
-  async deleteSdwt(@Param('id') id: string) { return this.infraService.deleteSdwt(id); }
+  async deleteSdwt(@Param('id') id: string) {
+    return this.infraService.deleteSdwt(id);
+  }
+
+  // --- 2. Agent Server API ---
 
   @Get('agent-server')
-  async getAgentServers() { return this.infraService.getAgentServers(); }
+  async getAgentServers() {
+    return this.infraService.getAgentServers();
+  }
 
   @Post('agent-server')
-  async createAgentServer(@Body() body: Prisma.CfgServerCreateInput) { return this.infraService.createAgentServer(body); }
+  async createAgentServer(@Body() body: Prisma.CfgServerCreateInput) {
+    return this.infraService.createAgentServer(body);
+  }
 
   @Put('agent-server/:id')
-  async updateAgentServer(@Param('id') id: string, @Body() body: Prisma.CfgServerUpdateInput) {
+  async updateAgentServer(
+    @Param('id') id: string,
+    @Body() body: Prisma.CfgServerUpdateInput,
+  ) {
     return this.infraService.updateAgentServer(id, body);
   }
 
   @Delete('agent-server/:id')
-  async deleteAgentServer(@Param('id') id: string) { return this.infraService.deleteAgentServer(id); }
+  async deleteAgentServer(@Param('id') id: string) {
+    return this.infraService.deleteAgentServer(id);
+  }
 }
