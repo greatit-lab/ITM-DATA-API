@@ -4,10 +4,14 @@ import { LampLifeService } from './lamplife.service';
 
 @Controller('lamplife')
 export class LampLifeController {
-  constructor(private readonly lampService: LampLifeService) {}
+  constructor(private readonly lampLifeService: LampLifeService) {}
 
   @Get()
-  async getLampLife(@Query('site') site: string, @Query('sdwt') sdwt: string) {
-    return this.lampService.getLampStatus(site, sdwt);
+  async getLampData(
+    @Query('site') site?: string,
+    @Query('sdwt') sdwt?: string,
+    @Query('eqpId') eqpId?: string,
+  ) {
+    return this.lampLifeService.getLampData(site, sdwt, eqpId);
   }
 }
