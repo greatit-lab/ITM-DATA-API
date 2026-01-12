@@ -146,9 +146,6 @@ export class WaferService {
       whereClause += ` AND lotid = $${queryParams.length + 1}`;
       queryParams.push(lotId);
     }
-    // 선택된 자신(cassettercp)을 제외하지 않고, 다른 필터 조건만 반영 (계층 구조)
-    // 단, 자기 자신을 선택 변경할 때 전체 목록이 보여야 한다면 아래 조건문 수정 필요
-    // 여기서는 요청하신 대로 상위 필터 의존성만 고려하여 구성함.
     if (cassetteRcp && colName !== 'cassettercp') {
       whereClause += ` AND cassettercp = $${queryParams.length + 1}`;
       queryParams.push(cassetteRcp);
@@ -715,6 +712,60 @@ export class WaferService {
     }
   }
 
+  async checkPdf(
+    params: WaferQueryParams,
+  ): Promise<{ exists: boolean; url: string | null }> {
+    const { eqpId, lotId, waferId, servTs } = params;
+    if (!eqpId || !servTs) return { exists: false, url: null };
+
+    try {
+      const ts = typeof servTs === 'string' ? servTs : servTs.toISOString();
+
+      const results = await this.prisma.$queryRawUnsafe<PdfResult[]>(
+        `SELECT file_uri FROM public.plg_wf_map 
+          WHERE eqpid = $1 
+            AND datetime >= $2::timestamp - interval '24 hours'
+            AND datetime <= $2::timestamp + interval '24 hours'
+          ORDER BY datetime DESC`,
+        eqpId,
+        ts,
+      );
+
+      if (!results || results.length === 0) {
+        return { exists: false, url: null };
+      }
+
+      if (lotId) {
+        const targetLot = lotId.trim();
+        const targetLotUnderscore = targetLot.replace(/\./g, '_');
+
+        const matched = results.find((r) => {
+          if (!r.file_uri) return false;
+          const uri = r.file_uri;
+
+          const hasLot =
+            uri.includes(targetLot) || uri.includes(targetLotUnderscore);
+
+          let hasWafer = true;
+          if (waferId) {
+            hasWafer = uri.includes(String(waferId));
+          }
+
+          return hasLot && hasWafer;
+        });
+
+        if (matched) {
+          return { exists: true, url: matched.file_uri };
+        }
+      } else {
+        return { exists: true, url: results[0].file_uri };
+      }
+    } catch (e) {
+      console.warn(`Failed to check PDF for ${String(eqpId)}:`, e);
+    }
+    return { exists: false, url: null };
+  }
+
   async getSpectrum(params: WaferQueryParams) {
     const { eqpId, lotId, waferId, pointNumber, ts } = params;
 
@@ -880,22 +931,31 @@ export class WaferService {
     let sql = `WHERE eqpid = '${String(p.eqpId)}'`;
 
     // 1. 단일 측정 Scan 조회 (Data Results 행 선택 시)
-    // servTs가 넘어오더라도 실제 조회는 'datetime' 컬럼 기준 (장비 측정 시간)
-    // dateTime 값이 있으면 사용하고, 없으면 servTs를 대체로 사용 (프론트에서 dateTime 전달됨)
     const targetDate = p.dateTime || p.servTs;
 
     if (targetDate) {
-      const ts = typeof targetDate === 'string' ? new Date(targetDate) : targetDate;
-      const tsIso = ts.toISOString();
+      // Date 객체일 경우 toISOString()을 쓰면 UTC로 변환되어 DB 값(KST)과 달라질 수 있음.
+      // 따라서 Date 객체라면 문자열로 변환하거나, 이미 문자열이라면 T, Z를 제거하고 사용.
+      let dateStr = "";
+      if (typeof targetDate === 'string') {
+        dateStr = targetDate;
+      } else {
+        // Date 객체인 경우 ISO 문자열로 변환
+        dateStr = targetDate.toISOString();
+      }
       
-      // 장비 시간(datetime) 기준으로 ±2초 범위 검색 (같은 Run 내의 모든 Point 포함)
-      sql += ` AND datetime >= '${tsIso}'::timestamp - interval '2 second'`;
-      sql += ` AND datetime <= '${tsIso}'::timestamp + interval '2 second'`;
+      // 문자열에서 시간 부분만 추출 (예: '2026-01-12T08:51:04.000Z' -> '2026-01-12 08:51:04')
+      // T와 Z를 제거하고 소수점 이하 초 단위를 날려버리거나 포함해서 비교
+      const cleanDateStr = dateStr.replace('T', ' ').replace('Z', '').split('.')[0];
+      
+      // timestamp 캐스팅을 명시하여 문자열 그대로 DB의 datetime과 비교
+      sql += ` AND datetime >= '${cleanDateStr}'::timestamp - interval '2 second'`;
+      sql += ` AND datetime <= '${cleanDateStr}'::timestamp + interval '2 second'`;
 
       if (p.lotId) sql += ` AND lotid = '${String(p.lotId)}'`;
       if (p.waferId) sql += ` AND waferid = ${Number(p.waferId)}`;
       
-      // [중요] 통계 조회 시 0값 문제 해결:
+      // [중요] 통계 0값 문제 해결: 
       // 선택된 행의 컨텍스트(Eqp, Time, Lot, Wafer)만으로 유니크하게 식별 가능하므로
       // 불필요한 메타데이터(Cassette, Stage, Film 등) 조건은 제외하여 데이터 누락 방지.
     } 
