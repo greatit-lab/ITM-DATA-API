@@ -31,6 +31,10 @@ model RefEquipment {
 
   agentInfo   AgentInfo?
   agentStatus AgentStatus?
+  
+  // [수정] ItmInfo와의 1:1 관계 추가 (이 부분이 빠져서 에러 발생)
+  itmInfo     ItmInfo?
+
   plgErrors   PlgError[]
   eqpPerfs    EqpPerf[]
   lampLifes   EqpLampLife[]
@@ -69,6 +73,7 @@ model AgentInfo {
   memory     String?
   disk       String?
   vga        String?
+  
   equipment RefEquipment @relation(fields: [eqpid], references: [eqpid])
 
   @@map("agent_info")
@@ -208,6 +213,9 @@ model ItmInfo {
   version     String?
   dbVersion   String? @map("db_version")
 
+  // [수정] RefEquipment와의 관계 설정 추가
+  equipment   RefEquipment @relation(fields: [eqpid], references: [eqpid])
+
   @@map("itm_info")
 }
 
@@ -218,7 +226,6 @@ model CfgLotUniformityMetrics {
   @@map("cfg_lot_uniformity_metrics")
 }
 
-// [수정] 사용자 요청 테이블 스키마에 맞춤
 model ErrSeverityMap {
   errorId  String @id @map("error_id")
   severity String
