@@ -8,16 +8,19 @@ export interface HealthDto {
   totalScore: number;
   status: 'Good' | 'Warning' | 'Critical';
   factors: {
-    reliability: number; // 신뢰성 (에러)
-    performance: number; // 성능 (리소스)
-    component: number; // 부품 (램프)
-    stability: number; // 안정성 (온도)
+    reliability: number; // 신뢰성 (30점)
+    performance: number; // 성능 (20점)
+    component: number;   // 부품 (20점)
+    optical: number;     // 광학 (20점) - [실데이터 연동]
+    stability: number;   // 안정성 (10점)
   };
   details: {
     errorCount: number;
     avgResourceUsage: number;
     lampUsageRatio: number;
     tempVolatility: number;
+    avgIntensity: number; // 평균 조도
+    snrValue: number;     // 신호 대 잡음비
   };
 }
 
@@ -33,6 +36,11 @@ interface LampStatRaw {
   usageRatio: number | null;
 }
 
+interface OpticalStatRaw {
+  eqpid: string;
+  values: number[]; // 스펙트럼 데이터 배열
+}
+
 @Injectable()
 export class HealthService {
   constructor(private prisma: PrismaService) {}
@@ -41,27 +49,18 @@ export class HealthService {
     // 1. 대상 장비 목록 조회 (필터링)
     const equipmentWhere: any = {};
 
-    // SDWT 필터
+    // SDWT & Site 필터
     if (sdwt) {
       equipmentWhere.sdwt = sdwt;
     }
-
-    // Site 필터 (RefSdwt 관계 활용)
     if (site) {
-      equipmentWhere.sdwtRel = {
-        site: site,
-        isUse: 'Y',
-      };
+      equipmentWhere.sdwtRel = { site: site, isUse: 'Y' };
     } else {
-      equipmentWhere.sdwtRel = {
-        isUse: 'Y',
-      };
+      equipmentWhere.sdwtRel = { isUse: 'Y' };
     }
 
-    // [수정] ITM Agent가 설치된 장비만 조회 (agentInfo가 null이 아닌 경우)
-    equipmentWhere.agentInfo = {
-      isNot: null,
-    };
+    // ITM Agent가 설치된 장비만 조회
+    equipmentWhere.agentInfo = { isNot: null };
 
     const equipments = await this.prisma.refEquipment.findMany({
       where: equipmentWhere,
@@ -73,12 +72,14 @@ export class HealthService {
 
     // 기준 시간 설정
     const now = new Date();
-    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000); // 에러 집계 (7일)
-    const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000); // 성능 집계 (1일)
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000); 
+    const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000); 
 
-    // 2. 데이터 집계 (병렬 처리 권장되나, 안정성을 위해 순차 처리 또는 Promise.all 활용)
+    // ---------------------------------------------------------
+    // 2. 데이터 집계 (Data Aggregation)
+    // ---------------------------------------------------------
 
-    // (A) 에러 건수 집계 (Prisma GroupBy)
+    // (A) 에러 건수 집계 (Reliability) - Prisma GroupBy
     const errorStats = await this.prisma.plgError.groupBy({
       by: ['eqpid'],
       where: {
@@ -88,23 +89,21 @@ export class HealthService {
       _count: { _all: true },
     });
 
-    // (B) 성능 통계 (리소스 사용률 평균, 온도 표준편차) - Raw Query
     const eqpIdString = eqpIds.map((id) => `'${id}'`).join(',');
 
-    // PostgreSQL Raw Query: eqp_perf 테이블
+    // (B) 성능 통계 (Performance & Stability) - Raw Query
     const perfRaw = await this.prisma.$queryRawUnsafe<PerfStatRaw[]>(
       `SELECT 
         eqpid, 
-        AVG(cpu_usage + mem_usage) / 2 as "avgUsage",
-        STDDEV(cpu_temp) as "tempStd"
+        AVG(COALESCE(cpu_usage, 0) + COALESCE(mem_usage, 0)) / 2 as "avgUsage",
+        STDDEV(COALESCE(cpu_temp, 0)) as "tempStd"
       FROM public.eqp_perf
       WHERE eqpid IN (${eqpIdString})
         AND serv_ts >= '${oneDayAgo.toISOString()}'
       GROUP BY eqpid`,
     );
 
-    // (C) 램프 수명 비율 (현재 사용 시간 / 수명) - Raw Query
-    // PostgreSQL Raw Query: eqp_lamp_life 테이블
+    // (C) 램프 수명 비율 (Component) - Raw Query
     const lampRaw = await this.prisma.$queryRawUnsafe<LampStatRaw[]>(
       `SELECT 
         eqpid, 
@@ -114,7 +113,19 @@ export class HealthService {
       GROUP BY eqpid`,
     );
 
+    // (D) 광학 데이터 (Optical) - Raw Query [Optical Health Analytics와 동일 소스]
+    // 각 장비별 가장 최근의 스펙트럼 데이터 조회
+    const opticalRaw = await this.prisma.$queryRawUnsafe<OpticalStatRaw[]>(
+      `SELECT DISTINCT ON (eqpid)
+         eqpid, values
+       FROM public.plg_onto_spectrum
+       WHERE eqpid IN (${eqpIdString})
+       ORDER BY eqpid, ts DESC`
+    );
+
+    // ---------------------------------------------------------
     // 3. 데이터 매핑 (Map 변환)
+    // ---------------------------------------------------------
     const errorMap = new Map(errorStats.map((e) => [e.eqpid, e._count._all]));
 
     const perfMap = new Map(
@@ -128,37 +139,73 @@ export class HealthService {
       lampRaw.map((l) => [l.eqpid, Number(l.usageRatio || 0)]),
     );
 
-    // 4. 점수 산정 알고리즘
+    const opticalMap = new Map(
+      opticalRaw.map((o) => [o.eqpid, o.values || []])
+    );
+
+    // ---------------------------------------------------------
+    // 4. 점수 산정 알고리즘 (Scoring Logic)
+    // ---------------------------------------------------------
     return eqpIds
       .map((eqpId) => {
-        // (1) 신뢰성 (Reliability): 에러가 적을수록 고득점 (기본 40점)
+        // [Factor 1] 신뢰성 (Reliability) - 배점 30점
         const errorCount = errorMap.get(eqpId) || 0;
-        const reliabilityScore = Math.max(0, 40 - errorCount * 4);
+        // 에러 0건: 30점, 1건당 3점 감점 (10건 이상이면 0점)
+        const reliabilityScore = Math.max(0, 30 - errorCount * 3);
 
-        // (2) 성능 (Performance): 리소스 사용률이 적절할수록 고득점 (기본 30점)
-        // 사용률 20% 이하는 안정적, 그 이상부터 감점
+        // [Factor 2] 성능 (Performance) - 배점 20점
         const perf = perfMap.get(eqpId) || { usage: 0, std: 0 };
+        // 리소스 사용률 30% 이하: 만점, 그 이상부터 선형 감점
         const resourceScore = Math.max(
           0,
-          30 * (1 - Math.max(0, perf.usage - 20) / 70),
+          20 * (1 - Math.max(0, perf.usage - 30) / 70),
         );
 
-        // (3) 부품 (Component): 램프 수명이 많이 남을수록 고득점 (기본 20점)
+        // [Factor 3] 부품 (Component) - 배점 20점
         const lampRatio = lampMap.get(eqpId) || 0;
+        // 수명이 많이 남을수록(사용률이 낮을수록) 고득점
         const componentScore = Math.max(0, 20 * (1 - Math.min(1, lampRatio)));
 
-        // (4) 안정성 (Stability): 온도 변화가 적을수록 고득점 (기본 10점)
+        // [Factor 4] 광학 (Optical) - 배점 20점 (실데이터 반영)
+        const spectrumValues = opticalMap.get(eqpId) || [];
+        let opticalScore = 20; // 기본값
+        let avgIntensity = 0;
+        let snrValue = 0;
+
+        if (spectrumValues.length > 0) {
+          const maxVal = Math.max(...spectrumValues);
+          const minVal = Math.min(...spectrumValues); 
+          const avgVal = spectrumValues.reduce((a, b) => a + b, 0) / spectrumValues.length;
+          
+          avgIntensity = Math.round(avgVal);
+
+          // SNR(Signal-to-Noise Ratio) 계산: 20 * log10(Max / Noise)
+          // Noise가 0이면 1로 보정
+          const noise = minVal > 0 ? minVal : 1;
+          snrValue = parseFloat((20 * Math.log10(maxVal / noise)).toFixed(1));
+
+          // 점수 산정: SNR 40dB 이상 양호(만점), 20dB 미만 불량(0점)
+          if (snrValue < 20) opticalScore = 0;
+          else if (snrValue >= 40) opticalScore = 20;
+          else opticalScore = Math.round(snrValue - 20); // 20~40dB 사이 비례 점수
+        } else {
+          // 데이터가 없으면 0점 처리 (센서 미감지)
+          opticalScore = 0;
+        }
+
+        // [Factor 5] 안정성 (Stability) - 배점 10점
+        // 온도 변화 표준편차가 0에 가까울수록 고득점 (5도 이상 흔들리면 0점)
         const stabilityScore = Math.max(
           0,
           10 * (1 - Math.min(1, perf.std / 5)),
         );
 
-        // 총점 계산
+        // [Total] 총점 계산 (Max 100)
         const totalScore = Math.round(
-          reliabilityScore + resourceScore + componentScore + stabilityScore,
+          reliabilityScore + resourceScore + componentScore + opticalScore + stabilityScore,
         );
 
-        // 상태 등급 판정
+        // [Status] 상태 등급 판정
         let status: 'Good' | 'Warning' | 'Critical' = 'Good';
         if (totalScore < 60) status = 'Critical';
         else if (totalScore < 80) status = 'Warning';
@@ -171,6 +218,7 @@ export class HealthService {
             reliability: Math.round(reliabilityScore),
             performance: Math.round(resourceScore),
             component: Math.round(componentScore),
+            optical: Math.round(opticalScore),
             stability: Math.round(stabilityScore),
           },
           details: {
@@ -178,9 +226,11 @@ export class HealthService {
             avgResourceUsage: perf.usage,
             lampUsageRatio: lampRatio * 100,
             tempVolatility: perf.std,
+            avgIntensity,
+            snrValue,
           },
         };
       })
-      .sort((a, b) => a.totalScore - b.totalScore); // 점수 낮은 순(위험한 장비 우선) 정렬
+      .sort((a, b) => a.totalScore - b.totalScore); // 점수 낮은 순(위험 장비) 우선 정렬
   }
 }
