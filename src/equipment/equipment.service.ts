@@ -38,7 +38,12 @@ export class EquipmentService {
       if (site) where.sdwtRel.site = site;
     }
 
-    // AgentInfo가 있는 장비 위주로 조회 (Left Join)
+    // Explorer에서는 ITM Agent가 설치된 장비만 조회 (AgentInfo 존재 여부)
+    where.agentInfo = {
+      isNot: null 
+    };
+
+    // AgentInfo가 있는 장비 위주로 조회
     const results = await this.prisma.refEquipment.findMany({
       where,
       include: {
@@ -50,17 +55,29 @@ export class EquipmentService {
       orderBy: { eqpid: 'asc' },
     });
 
+    const now = new Date().getTime();
+    // 5분(300,000ms) 이내에 통신 기록이 있으면 Online으로 간주
+    const ONLINE_THRESHOLD_MS = 5 * 60 * 1000; 
+
     // DTO 변환 (Frontend 요구사항에 맞춤)
     return results.map(eqp => {
-      // [수정] 타입 에러 해결: 빈 객체 대신 any로 캐스팅하여 속성 접근 허용
       const info: any = eqp.agentInfo || {};
       const status: any = eqp.agentStatus || {};
       const itm: any = eqp.itmInfo || {};
 
+      // Status 로직: '최근 통신 시간' 기준으로 Online 판별
+      let isOnline = false;
+      if (status.lastPerfUpdate) {
+        const lastContactTime = new Date(status.lastPerfUpdate).getTime();
+        if (now - lastContactTime < ONLINE_THRESHOLD_MS) {
+          isOnline = true;
+        }
+      }
+
       return {
         eqpId: eqp.eqpid,
         pcName: info.pcName || '-',
-        isOnline: status.status === 'Running' || status.status === 'Idle',
+        isOnline: isOnline,
         ipAddress: info.ipAddress || '-',
         lastContact: status.lastPerfUpdate ? new Date(status.lastPerfUpdate).toISOString() : null,
         os: info.os || '-',
@@ -73,10 +90,12 @@ export class EquipmentService {
         vga: info.vga || '-',
         type: info.type || '-',
         locale: info.locale || '-',
-        systemModel: itm.systemModel || eqp.model || '-',
+        
+        // 데이터 대체 표시 문제 해결 (ITM Info가 없으면 '-' 표시)
+        systemModel: itm.systemModel || '-', 
         serialNum: itm.serialNum || '-',
         application: itm.application || '-',
-        version: itm.version || info.appVer || '-',
+        version: itm.version || '-', 
         dbVersion: itm.dbVersion || '-',
       };
     });
@@ -93,9 +112,8 @@ export class EquipmentService {
       where.sdwtRel = { site };
     }
 
-    // [수정] type이 'wafer'이거나 특정 분석 페이지용일 경우, 
-    // ITM Agent가 설치된 장비(AgentInfo 존재)만 필터링
-    if (type === 'wafer' || type === 'agent') {
+    // [수정] type이 'performance'일 때도 Agent가 설치된 장비만 조회하도록 조건 추가
+    if (type === 'wafer' || type === 'agent' || type === 'performance') {
       where.agentInfo = {
         isNot: null, // AgentInfo가 존재하는 레코드만 선택
       };
