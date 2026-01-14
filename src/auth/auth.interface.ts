@@ -1,12 +1,17 @@
 // ITM-Data-API/src/auth/auth.interface.ts
 
-// [수정] DTO는 NestJS 데코레이터와 호환되도록 Class로 정의해야 합니다.
 export class LoginDto {
-  username!: string; // '!'는 초기화 없이 사용함을 명시 (Strict Property Initialization)
+  username!: string;
   password?: string;
 }
 
-// UserPayload는 타입 정의용이므로 interface로 유지해도 됩니다.
+export class SyncUserDto {
+  loginId?: string; // Backend가 주로 보냄
+  username?: string;
+  deptName?: string;
+  [key: string]: any; // 그 외 어떤 필드가 와도 허용 (에러 방지)
+}
+
 export interface UserPayload {
   username: string;
   role: string;
