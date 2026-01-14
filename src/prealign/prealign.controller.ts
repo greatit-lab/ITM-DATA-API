@@ -1,17 +1,25 @@
-// ITM-Data-API/src/prealign/prealign.controller.ts
+// backend/src/prealign/prealign.controller.ts
 import { Controller, Get, Query } from '@nestjs/common';
-import { PreAlignService } from './prealign.service';
+import { PreAlignService, PreAlignData } from './prealign.service';
 
 @Controller('prealign')
 export class PreAlignController {
   constructor(private readonly preAlignService: PreAlignService) {}
 
-  @Get()
-  async getPreAlignData(
+  @Get('trend')
+  async getTrend(
+    @Query('site') site: string,
+    @Query('sdwt') sdwt: string,
     @Query('eqpId') eqpId: string,
     @Query('startDate') startDate: string,
     @Query('endDate') endDate: string,
-  ) {
-    return this.preAlignService.getLog(eqpId, startDate, endDate);
+  ): Promise<PreAlignData[]> {
+    return await this.preAlignService.getTrend(
+      site,
+      sdwt,
+      eqpId,
+      startDate,
+      endDate,
+    );
   }
 }
