@@ -117,6 +117,30 @@ export class WaferService {
 
   constructor(private prisma: PrismaService) {}
 
+  // [Helper] 날짜 파싱 및 범위 설정 (Local Time 문자열 그대로 범위 설정)
+  private getSafeDates(start?: string | Date, end?: string | Date): { startDate: Date, endDate: Date } {
+    const now = new Date();
+    
+    // 시작일: 입력값 또는 7일 전
+    let startDate = start ? new Date(start) : new Date();
+    if (isNaN(startDate.getTime()) || !start) {
+        startDate = new Date();
+        startDate.setDate(startDate.getDate() - 7);
+    }
+    // 시간 부분을 00:00:00.000 으로 설정
+    startDate.setHours(0, 0, 0, 0);
+
+    // 종료일: 입력값 또는 오늘
+    let endDate = end ? new Date(end) : now;
+    if (isNaN(endDate.getTime())) {
+        endDate = now;
+    }
+    // 시간 부분을 23:59:59.999 로 설정 (하루 전체 포함)
+    endDate.setHours(23, 59, 59, 999);
+
+    return { startDate, endDate };
+  }
+
   // 1. Distinct Values 조회
   async getDistinctValues(
     column: string,
@@ -160,8 +184,10 @@ export class WaferService {
     }
 
     if (startDate && endDate) {
+      // [수정] getSafeDates 사용
+      const { startDate: s, endDate: e } = this.getSafeDates(startDate, endDate);
       whereClause += ` AND serv_ts >= $${queryParams.length + 1} AND serv_ts <= $${queryParams.length + 2}`;
-      queryParams.push(new Date(startDate), new Date(endDate));
+      queryParams.push(s, e);
     }
 
     const sql = `SELECT DISTINCT "${colName}" as val FROM ${table} ${whereClause} ORDER BY "${colName}" DESC LIMIT 100`;
@@ -220,8 +246,10 @@ export class WaferService {
     }
 
     if (startDate && endDate) {
+      // [수정] getSafeDates 사용
+      const { startDate: s, endDate: e } = this.getSafeDates(startDate, endDate);
       sql += ` AND s.ts >= $${queryParams.length + 1} AND s.ts <= $${queryParams.length + 2}`;
-      queryParams.push(new Date(startDate), new Date(endDate));
+      queryParams.push(s, e);
     }
 
     sql += ` ORDER BY s.point ASC`;
@@ -321,12 +349,14 @@ export class WaferService {
     queryParams.push(...waferIdList);
 
     if (startDate) {
+      const { startDate: s } = this.getSafeDates(startDate);
       sql += ` AND s."ts" >= $${queryParams.length + 1}`;
-      queryParams.push(new Date(startDate));
+      queryParams.push(s);
     }
     if (endDate) {
+      const { endDate: e } = this.getSafeDates(undefined, endDate);
       sql += ` AND s."ts" <= $${queryParams.length + 1}`;
-      queryParams.push(new Date(endDate));
+      queryParams.push(e);
     }
 
     sql += ` ORDER BY s."waferid" ASC, f."serv_ts" DESC`;
@@ -456,17 +486,14 @@ export class WaferService {
       pageSize = 20,
     } = params;
 
-    let searchEnd: Date | undefined;
-    if (endDate) {
-      searchEnd = new Date(endDate);
-      searchEnd.setDate(searchEnd.getDate() + 1);
-    }
+    // [수정] getSafeDates 사용
+    const { startDate: s, endDate: e } = this.getSafeDates(startDate, endDate);
 
     const where: Prisma.PlgWfFlatWhereInput = {
       eqpid: eqpId || undefined,
       servTs: {
-        gte: startDate ? new Date(startDate) : undefined,
-        lt: searchEnd,
+        gte: s,
+        lte: e,
       },
       lotid: lotId ? { contains: lotId, mode: 'insensitive' } : undefined,
       waferid: waferId ? Number(waferId) : undefined,
@@ -541,7 +568,7 @@ export class WaferService {
     };
   }
 
-  // [수정] PDF 이미지 조회 (1페이지 Fallback 추가)
+  // [수정] PDF 이미지 조회 (로컬 파일 제외, HTTP만 사용, 1페이지 Fallback 추가)
   async getPdfImage(params: WaferQueryParams): Promise<string> {
     const { eqpId, lotId, waferId, dateTime, pointNumber } = params;
 
@@ -575,16 +602,19 @@ export class WaferService {
       throw new InternalServerErrorException('Only HTTP/HTTPS URLs are supported.');
     }
 
-    // 2. 캐시 경로 생성
+    // 2. 캐시 경로 생성 (파일명에 pointNumber 유지)
     const dateObj = new Date(dateTime as string);
     const dateStr = dateObj.toISOString().slice(0, 10).replace(/-/g, '');
     const cacheFileName = `wafer_${eqpId}_${dateStr}_pt${pointNumber}.png`;
     const cacheFilePath = path.join(os.tmpdir(), cacheFileName);
 
-    // 3. 캐시 검증
+    // [수정] 3. 캐시 검증: 0바이트 파일은 무조건 삭제하고 재생성
     if (fs.existsSync(cacheFilePath)) {
       const stats = fs.statSync(cacheFilePath);
       if (stats.size === 0) {
+        this.logger.warn(
+          `[PDF] Found broken cache (0 bytes), deleting: ${cacheFilePath}`,
+        );
         fs.unlinkSync(cacheFilePath);
       } else {
         try {
@@ -623,7 +653,7 @@ export class WaferService {
         writer.close();
         if (fs.existsSync(tempPdfPath)) fs.unlinkSync(tempPdfPath);
         throw new Error(
-          `Invalid content-type: ${contentType}. Server returned HTML.`,
+          `Invalid content-type: ${contentType}. Server returned HTML instead of PDF. Check URL access.`,
         );
       }
 
@@ -648,6 +678,9 @@ export class WaferService {
         const headerString = headerBuffer.toString('utf8', 0, bytesRead);
 
         if (bytesRead < 4 || !headerString.startsWith('%PDF')) {
+          this.logger.error(
+            `[PDF Error] Invalid File Header: ${headerString.substring(0, 50)}...`,
+          );
           throw new Error(
             'File signature mismatch. The downloaded file is NOT a PDF.',
           );
@@ -667,6 +700,13 @@ export class WaferService {
 
       // [수정] Point 번호 페이지 시도 -> 실패 시 1페이지 Fallback
       let targetPage = Number(pointNumber);
+      // 페이지 번호가 유효하지 않으면(0 이하) 1페이지로 설정
+      if (isNaN(targetPage) || targetPage < 1) targetPage = 1;
+
+      this.logger.debug(
+        `[PDF] Converting Page ${targetPage} using Poppler...`,
+      );
+
       let opts = {
         format: 'png',
         out_dir: os.tmpdir(),
@@ -700,6 +740,12 @@ export class WaferService {
       }
 
       const generatedImagePath = path.join(os.tmpdir(), generatedImageName);
+
+      // 파일 크기 체크
+      const imgStats = fs.statSync(generatedImagePath);
+      if (imgStats.size === 0) {
+        throw new Error('Generated PNG file is 0 bytes.');
+      }
 
       // 캐시 저장
       try {
@@ -1081,16 +1127,17 @@ export class WaferService {
       if (p.waferId) sql += ` AND waferid = ${Number(p.waferId)}`;
     } else {
       if (p.startDate) {
-        const s =
-          typeof p.startDate === 'string'
-            ? p.startDate
-            : p.startDate.toISOString();
-        sql += ` AND serv_ts >= '${s}'`;
+        // [수정] getSafeDates 사용
+        const { startDate: s } = this.getSafeDates(p.startDate);
+        const sStr = s.toISOString(); // Postgres에서 파라미터로 넘길 땐 ISO도 OK지만 여기서는 raw sql string building이라 주의 필요
+        // 그러나 buildUniqueWhere는 주로 포인트 데이터 등 세부 조회용이라 serv_ts string을 직접 넘기는 경우가 많음.
+        // 여기서는 안전하게 param 변수 대신 string literal로 넣고 있으므로 ISO string으로 변환
+        sql += ` AND serv_ts >= '${sStr}'`;
       }
       if (p.endDate) {
-        const e =
-          typeof p.endDate === 'string' ? p.endDate : p.endDate.toISOString();
-        sql += ` AND serv_ts <= '${e}'`;
+        const { endDate: e } = this.getSafeDates(undefined, p.endDate);
+        const eStr = e.toISOString();
+        sql += ` AND serv_ts <= '${eStr}'`;
       }
       if (p.lotId) sql += ` AND lotid = '${String(p.lotId)}'`;
       if (p.waferId) sql += ` AND waferid = ${Number(p.waferId)}`;
@@ -1109,9 +1156,8 @@ export class WaferService {
 
     if (!startDate || !endDate || !cassetteRcp) return [];
 
-    const start =
-      typeof startDate === 'string' ? new Date(startDate) : startDate;
-    const end = typeof endDate === 'string' ? new Date(endDate) : endDate;
+    // [수정] getSafeDates 사용
+    const { startDate: s, endDate: e } = this.getSafeDates(startDate, endDate);
 
     let sql = `
       SELECT DISTINCT t1.eqpid
@@ -1122,7 +1168,7 @@ export class WaferService {
         AND t1.cassettercp = $3
     `;
 
-    const queryParams: (string | Date | number)[] = [start, end, cassetteRcp];
+    const queryParams: (string | Date | number)[] = [s, e, cassetteRcp];
     let pIdx = 4;
 
     if (site) {
@@ -1177,9 +1223,8 @@ export class WaferService {
 
     const selectCols = metrics.map((m) => `"${m}"`).join(', ');
 
-    const start =
-      typeof startDate === 'string' ? new Date(startDate) : startDate;
-    const end = typeof endDate === 'string' ? new Date(endDate) : endDate;
+    // [수정] getSafeDates 사용
+    const { startDate: s, endDate: e } = this.getSafeDates(startDate, endDate);
 
     let sql = `
       SELECT eqpid, lotid, waferid, point, ${selectCols}
@@ -1189,7 +1234,7 @@ export class WaferService {
         AND eqpid IN (${eqpList.map((e) => `'${e}'`).join(',')})
     `;
 
-    const queryParams: (string | Date | number)[] = [start, end, cassetteRcp];
+    const queryParams: (string | Date | number)[] = [s, e, cassetteRcp];
     let pIdx = 4;
 
     if (stageGroup) {
@@ -1220,10 +1265,10 @@ export class WaferService {
     if (!eqpId || !startDate || !endDate) return [];
 
     try {
-      const start = new Date(startDate);
-      const end = new Date(endDate);
+      // [수정] getSafeDates 사용
+      const { startDate: s, endDate: e } = this.getSafeDates(startDate, endDate);
 
-      const queryParams: (string | number | Date)[] = [eqpId, start, end];
+      const queryParams: (string | number | Date)[] = [eqpId, s, e];
 
       let filterClause = '';
 
