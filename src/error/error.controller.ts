@@ -1,63 +1,68 @@
 // ITM-Data-API/src/error/error.controller.ts
-import { Controller, Get, Query } from '@nestjs/common';
-import { ErrorService } from './error.service';
+import { Controller, Get, Query } from '@nestjs/common'; // UseGuards 제거
+import { ErrorService, ErrorQueryParams } from './error.service';
+// import { JwtAuthGuard } from '../auth/jwt-auth.guard'; // 임시 주석 처리
 
 @Controller('error')
+// @UseGuards(JwtAuthGuard) // [수정] 401 오류 해결을 위해 주석 처리 (내부 API 허용)
 export class ErrorController {
   constructor(private readonly errorService: ErrorService) {}
 
   @Get('summary')
-  async getSummary(
-    @Query('site') site: string,
-    @Query('sdwt') sdwt: string,
-    @Query('startDate') startDate: string,
-    @Query('endDate') endDate: string,
-    @Query('eqpId') eqpId: string, // [추가] 장비 ID 필터
+  async getErrorSummary(
+    @Query('site') site?: string,
+    @Query('sdwt') sdwt?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('eqpId') eqpId?: string,
   ) {
-    return this.errorService.getErrorSummary(
+    const params: ErrorQueryParams = {
       site,
       sdwt,
-      startDate,
-      endDate,
+      start: startDate,
+      end: endDate,
       eqpId,
-    );
+    };
+    return this.errorService.getErrorSummary(params);
   }
 
   @Get('trend')
-  async getTrend(
-    @Query('site') site: string,
-    @Query('sdwt') sdwt: string,
-    @Query('startDate') startDate: string,
-    @Query('endDate') endDate: string,
-    @Query('eqpId') eqpId: string, // [추가] 장비 ID 필터
+  async getErrorTrend(
+    @Query('site') site?: string,
+    @Query('sdwt') sdwt?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('eqpId') eqpId?: string,
   ) {
-    return this.errorService.getErrorTrend(
+    const params: ErrorQueryParams = {
       site,
       sdwt,
-      startDate,
-      endDate,
+      start: startDate,
+      end: endDate,
       eqpId,
-    );
+    };
+    return this.errorService.getErrorTrend(params);
   }
 
-  @Get('logs')
-  async getLogs(
-    @Query('page') page: number = 1,
-    @Query('limit') limit: number = 20,
-    @Query('site') site: string,
-    @Query('sdwt') sdwt: string,
-    @Query('startDate') startDate: string,
-    @Query('endDate') endDate: string,
-    @Query('eqpId') eqpId: string, // [추가] 장비 ID 필터
+  @Get('list')
+  async getErrorList(
+    @Query('site') site?: string,
+    @Query('sdwt') sdwt?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('eqpId') eqpId?: string,
+    @Query('page') page?: number,
+    @Query('pageSize') pageSize?: number,
   ) {
-    return this.errorService.getErrorLogs(
-      Number(page),
-      Number(limit),
+    const params = {
       site,
       sdwt,
-      startDate,
-      endDate,
+      start: startDate,
+      end: endDate,
       eqpId,
-    );
+      page,
+      pageSize,
+    };
+    return this.errorService.getErrorList(params);
   }
 }
