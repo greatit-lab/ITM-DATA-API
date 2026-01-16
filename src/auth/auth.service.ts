@@ -66,6 +66,7 @@ export class AuthService {
     if (!sdwtInfo) throw new NotFoundException(`SDWT info not found`);
     const kstNow = this.getKstDate();
     
+    // Ensure User Exists
     const userExists = await this.prisma.sysUser.findUnique({ where: { loginId } });
     if (!userExists) {
         await this.prisma.sysUser.create({
@@ -81,29 +82,14 @@ export class AuthService {
     return { status: 'success', site, sdwt: sdwtName };
   }
 
-  // Whitelist (에러 발생 시 로그인 차단 대신 로그 남기고 Pass하도록 수정 가능하나, 원칙상 에러 던짐)
+  // Whitelist
   async checkWhitelist(compId?: string, deptId?: string) {
-    this.logger.log(`[checkWhitelist] Comp: ${compId}, Dept: ${deptId}`);
-    
     const conditions: any[] = [];
     if (compId) conditions.push({ compid: compId, isActive: 'Y' });
     if (deptId) conditions.push({ deptid: deptId, isActive: 'Y' });
-
-    if (conditions.length === 0) {
-       // 조건이 없으면 체크할 필요 없음 -> 허용 혹은 에러 (정책에 따라)
-       // 여기서는 일단 에러 던짐 (BFF에서 잡음)
-       throw new BadRequestException('ID required');
-    }
-
-    try {
-      const access = await this.prisma.refAccessCode.findFirst({ where: { OR: conditions } });
-      if (access) return { isActive: 'Y' };
-    } catch (e) {
-      this.logger.error(`[checkWhitelist] DB Error: ${e}`);
-      // DB 에러 시 500을 던지면 BFF가 잡아서 처리함
-      throw e;
-    }
-    
+    if (conditions.length === 0) throw new BadRequestException('ID required');
+    const access = await this.prisma.refAccessCode.findFirst({ where: { OR: conditions } });
+    if (access) return { isActive: 'Y' };
     throw new NotFoundException('Not allowed');
   }
 
@@ -126,21 +112,23 @@ export class AuthService {
     throw new NotFoundException('Not an admin');
   }
 
-  // [수정] validUntil 확실하게 리턴
+  // [수정] 로그 추가: DB에서 가져온 날짜 확인
   async checkGuest(loginId: string) {
     const guest = await this.prisma.cfgGuestAccess.findUnique({ where: { loginId } });
     const kstNow = this.getKstDate();
 
-    // >>> 디버깅 로그
-    this.logger.log(`[checkGuest] LoginID: ${loginId}`);
-    this.logger.log(`[checkGuest] DB Record: ${JSON.stringify(guest)}`);
+    // >>> 디버깅 로그: DB 조회 결과 확인
+    this.logger.log(`[checkGuest] DB Query Result: ${JSON.stringify(guest)}`);
+    this.logger.log(`[checkGuest] Time Check: validUntil(${guest?.validUntil}) > now(${kstNow})`);
 
     if (guest && guest.validUntil > kstNow) {
-       // Date 객체를 그대로 리턴 (NestJS가 JSON 직렬화 시 ISO String으로 변환)
-       return { 
+       const response = { 
          grantedRole: 'GUEST',
          validUntil: guest.validUntil 
        };
+       // >>> 디버깅 로그: 리턴값 확인
+       this.logger.log(`[checkGuest] Returning: ${JSON.stringify(response)}`);
+       return response;
     }
     
     throw new NotFoundException('Not a guest');
