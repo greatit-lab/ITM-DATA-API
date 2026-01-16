@@ -1,4 +1,4 @@
-// [전체 코드 교체] ITM-Data-API/src/auth/auth.service.ts
+// ITM-Data-API/src/auth/auth.service.ts
 import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma.service';
