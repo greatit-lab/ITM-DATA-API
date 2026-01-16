@@ -7,14 +7,31 @@ import { Prisma } from '@prisma/client';
 export class EquipmentService {
   constructor(private prisma: PrismaService) {}
 
-  // 1. 인프라 관리용 목록 조회
+  // 1. 인프라 관리용 목록 조회 (500 에러 해결 버전)
   async getInfraList() {
-    return this.prisma.refEquipment.findMany({
-      include: {
-        sdwtRel: true, // SDWT 정보 포함
-      },
+    // [변경 1] include: { sdwtRel: true }를 제거하여 Relation 충돌 방지
+    const equipments = await this.prisma.refEquipment.findMany({
       orderBy: { eqpid: 'asc' },
     });
+
+    // [변경 2] 코드 레벨에서 SDWT 정보 안전하게 매핑 (Manual Join)
+    // 장비 데이터에 있는 sdwt 값들을 추출 (중복 제거)
+    const sdwtIds = [...new Set(equipments.map((e) => e.sdwt).filter(Boolean))];
+
+    // 존재하는 SDWT 정보만 조회
+    const sdwts = await this.prisma.refSdwt.findMany({
+      where: { sdwt: { in: sdwtIds } },
+    });
+
+    // 조회를 위한 Map 생성
+    const sdwtMap = new Map(sdwts.map((s) => [s.sdwt, s]));
+
+    // [변경 3] Frontend 호환성(eqpId) 및 SDWT 정보 결합하여 반환
+    return equipments.map((item) => ({
+      ...item,
+      eqpId: item.eqpid, // Frontend는 CamelCase 'eqpId'를 기대함
+      sdwtRel: sdwtMap.get(item.sdwt) || null, // 데이터가 없으면 null 처리 (에러 방지)
+    }));
   }
 
   // 2. 장비 상세 조회 (Explorer 등)
@@ -25,7 +42,6 @@ export class EquipmentService {
   }) {
     const { site, sdwt, eqpId } = params;
 
-    // 동적 필터 조건 생성
     const where: Prisma.RefEquipmentWhereInput = {};
 
     if (eqpId) {
@@ -38,12 +54,12 @@ export class EquipmentService {
       if (site) where.sdwtRel.site = site;
     }
 
-    // Explorer에서는 ITM Agent가 설치된 장비만 조회 (AgentInfo 존재 여부)
     where.agentInfo = {
       isNot: null,
     };
 
-    // AgentInfo가 있는 장비 위주로 조회
+    // 상세 조회는 필터링 조건이 많아 include 유지하되, try-catch로 보호 가능성 열어둠
+    // (단, 이곳은 AgentInfo가 있는 장비만 조회하므로 데이터 정합성이 높을 것으로 예상)
     const results = await this.prisma.refEquipment.findMany({
       where,
       include: {
@@ -56,16 +72,13 @@ export class EquipmentService {
     });
 
     const now = new Date().getTime();
-    // 5분(300,000ms) 이내에 통신 기록이 있으면 Online으로 간주
     const ONLINE_THRESHOLD_MS = 5 * 60 * 1000;
 
-    // DTO 변환 (Frontend 요구사항에 맞춤)
     return results.map((eqp) => {
       const info: any = eqp.agentInfo || {};
       const status: any = eqp.agentStatus || {};
       const itm: any = eqp.itmInfo || {};
 
-      // Status 로직: '최근 통신 시간' 기준으로 Online 판별
       let isOnline = false;
       if (status.lastPerfUpdate) {
         const lastContactTime = new Date(status.lastPerfUpdate).getTime();
@@ -75,7 +88,7 @@ export class EquipmentService {
       }
 
       return {
-        eqpId: eqp.eqpid,
+        eqpId: eqp.eqpid, // 매핑
         pcName: info.pcName || '-',
         isOnline: isOnline,
         ipAddress: info.ipAddress || '-',
@@ -92,8 +105,6 @@ export class EquipmentService {
         vga: info.vga || '-',
         type: info.type || '-',
         locale: info.locale || '-',
-
-        // 데이터 대체 표시 문제 해결 (ITM Info가 없으면 '-' 표시)
         systemModel: itm.systemModel || '-',
         serialNum: itm.serialNum || '-',
         application: itm.application || '-',
@@ -114,7 +125,6 @@ export class EquipmentService {
       where.sdwtRel = { site };
     }
 
-    // [수정] type에 'error' 추가: Error 페이지에서도 Agent 설치된 장비만 나오도록 함
     if (
       type === 'wafer' ||
       type === 'agent' ||
@@ -122,7 +132,7 @@ export class EquipmentService {
       type === 'error'
     ) {
       where.agentInfo = {
-        isNot: null, // AgentInfo가 존재하는 레코드만 선택
+        isNot: null,
       };
     }
 
@@ -139,11 +149,13 @@ export class EquipmentService {
   async getEquipment(eqpId: string) {
     const eqp = await this.prisma.refEquipment.findUnique({
       where: { eqpid: eqpId },
+      // 단일 조회 시에도 include가 실패할 수 있으므로, 필요시 getInfraList처럼 분리 가능
+      // 현재는 유지
       include: { sdwtRel: true },
     });
 
     if (!eqp) throw new NotFoundException(`Equipment ${eqpId} not found`);
-    return eqp;
+    return { ...eqp, eqpId: eqp.eqpid };
   }
 
   // 5. 장비 추가
