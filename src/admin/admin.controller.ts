@@ -55,4 +55,56 @@ export class AdminController {
   ) {
     return this.adminService.rejectGuestRequest(parseInt(reqId), body.rejectorId);
   }
+
+  // ==========================================
+  // [추가] 1. 에러 심각도 (Error Severity)
+  // ==========================================
+  @Get('severity')
+  async getSeverities() {
+    return this.adminService.getSeverities();
+  }
+
+  @Post('severity')
+  async addSeverity(@Body() body: any) {
+    return this.adminService.addSeverity(body);
+  }
+
+  @Put('severity/:errorId')
+  async updateSeverity(
+    @Param('errorId') errorId: string,
+    @Body() body: any
+  ) {
+    return this.adminService.updateSeverity(errorId, body);
+  }
+
+  @Delete('severity/:errorId')
+  async deleteSeverity(@Param('errorId') errorId: string) {
+    return this.adminService.deleteSeverity(errorId);
+  }
+
+  // ==========================================
+  // [추가] 2. 분석 지표 (Analysis Metrics)
+  // ==========================================
+  @Get('metrics')
+  async getMetrics() {
+    return this.adminService.getMetrics();
+  }
+
+  @Post('metrics')
+  async addMetric(@Body() body: any) {
+    return this.adminService.addMetric(body);
+  }
+
+  @Put('metrics/:metricName')
+  async updateMetric(
+    @Param('metricName') metricName: string,
+    @Body() body: any
+  ) {
+    return this.adminService.updateMetric(metricName, body);
+  }
+
+  @Delete('metrics/:metricName')
+  async deleteMetric(@Param('metricName') metricName: string) {
+    return this.adminService.deleteMetric(metricName);
+  }
 }
