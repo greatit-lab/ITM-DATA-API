@@ -33,7 +33,7 @@ export class AdminController {
   }
 
   // ==========================================
-  // [Access Code / Whitelist] (수정됨)
+  // [Access Code / Whitelist]
   // ==========================================
   @Get('guest/access')
   async getAllAccessCodes() {
@@ -152,5 +152,34 @@ export class AdminController {
   @Delete('metrics/:metricName')
   async deleteMetric(@Param('metricName') metricName: string) {
     return this.adminService.deleteMetric(metricName);
+  }
+
+  // ==========================================
+  // [System Config] (추가된 부분)
+  // ==========================================
+
+  // 1. 공통 서버 설정 (New Server)
+  @Get('new-server')
+  async getNewServerConfig() {
+    return this.adminService.getNewServerConfig();
+  }
+
+  @Put('new-server')
+  async updateNewServerConfig(@Body() body: any) {
+    return this.adminService.updateNewServerConfig(body);
+  }
+
+  // 2. 장비별 에이전트 설정 (Cfg Server)
+  @Get('servers')
+  async getCfgServers() {
+    return this.adminService.getCfgServers();
+  }
+
+  @Put('servers/:eqpid')
+  async updateCfgServer(
+    @Param('eqpid') eqpid: string,
+    @Body() body: any,
+  ) {
+    return this.adminService.updateCfgServer(eqpid, body);
   }
 }
