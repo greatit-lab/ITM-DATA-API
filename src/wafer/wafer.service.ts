@@ -10,9 +10,14 @@ import { Prisma } from '@prisma/client';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import * as poppler from 'pdf-poppler';
+// [변경] pdf-poppler 제거 및 child_process 사용
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import axios from 'axios';
 import { Readable } from 'stream';
+
+// 비동기 실행을 위한 Promisify
+const execFileAsync = promisify(execFile);
 
 export class WaferQueryParams {
   eqpId?: string;
@@ -107,17 +112,12 @@ interface OpticalTrendRawResult {
   values: number[];
 }
 
-interface PopplerModule {
-  convert: (file: string, options: any) => Promise<any>;
-}
-
 @Injectable()
 export class WaferService {
   private readonly logger = new Logger(WaferService.name);
 
   constructor(private prisma: PrismaService) {}
 
-  // [Helper] 날짜 파싱 및 범위 설정 (Local Time 문자열 그대로 범위 설정)
   private getSafeDates(start?: string | Date, end?: string | Date): { startDate: Date, endDate: Date } {
     const now = new Date();
     
@@ -127,7 +127,6 @@ export class WaferService {
         startDate = new Date();
         startDate.setDate(startDate.getDate() - 7);
     }
-    // 시간 부분을 00:00:00.000 으로 설정
     startDate.setHours(0, 0, 0, 0);
 
     // 종료일: 입력값 또는 오늘
@@ -135,13 +134,11 @@ export class WaferService {
     if (isNaN(endDate.getTime())) {
         endDate = now;
     }
-    // 시간 부분을 23:59:59.999 로 설정 (하루 전체 포함)
     endDate.setHours(23, 59, 59, 999);
 
     return { startDate, endDate };
   }
 
-  // 1. Distinct Values 조회
   async getDistinctValues(
     column: string,
     params: WaferQueryParams,
@@ -183,8 +180,8 @@ export class WaferService {
       queryParams.push(film);
     }
 
-    if (startDate && endDate) {
-      // [수정] getSafeDates 사용
+    // [수정] LotID가 있으면 날짜 제한 무시 (전체 기간 검색)
+    if (!lotId && startDate && endDate) {
       const { startDate: s, endDate: e } = this.getSafeDates(startDate, endDate);
       whereClause += ` AND serv_ts >= $${queryParams.length + 1} AND serv_ts <= $${queryParams.length + 2}`;
       queryParams.push(s, e);
@@ -210,18 +207,18 @@ export class WaferService {
     }
   }
 
-  // Lot, RCP, Stage 조건에 맞는 실제 Point 목록 조회
+  // [수정] Point 조회 (LotID 있을 시 날짜제한 해제 + JOIN 강화 + 필터 추가)
   async getDistinctPoints(params: WaferQueryParams): Promise<string[]> {
-    const { eqpId, lotId, cassetteRcp, stageGroup, startDate, endDate } =
-      params;
+    const { eqpId, lotId, cassetteRcp, stageRcp, stageGroup, film, startDate, endDate } = params;
 
+    // JOIN 조건: TRIM 적용 및 integer 변환 (매칭률 향상)
     let sql = `
       SELECT DISTINCT s.point
       FROM public.plg_onto_spectrum s
       JOIN public.plg_wf_flat f 
-        ON s.eqpid = f.eqpid 
-        AND s.lotid = f.lotid 
-        AND s.waferid = f.waferid::varchar 
+        ON TRIM(s.eqpid) = TRIM(f.eqpid)
+        AND TRIM(s.lotid) = TRIM(f.lotid)
+        AND s.waferid::integer = f.waferid
         AND s.point = f.point
       WHERE 1=1
     `;
@@ -240,13 +237,23 @@ export class WaferService {
       sql += ` AND f.cassettercp = $${queryParams.length + 1}`;
       queryParams.push(cassetteRcp);
     }
+    // [추가] StageRCP 필터
+    if (stageRcp) {
+      sql += ` AND f.stagercp = $${queryParams.length + 1}`;
+      queryParams.push(stageRcp);
+    }
     if (stageGroup) {
       sql += ` AND f.stagegroup = $${queryParams.length + 1}`;
       queryParams.push(stageGroup);
     }
+    // [추가] Film 필터
+    if (film) {
+      sql += ` AND f.film = $${queryParams.length + 1}`;
+      queryParams.push(film);
+    }
 
-    if (startDate && endDate) {
-      // [수정] getSafeDates 사용
+    // [핵심] LotID가 *없을 때만* 날짜 필터 적용 (LotID 있으면 과거 데이터도 조회)
+    if (!lotId && startDate && endDate) {
       const { startDate: s, endDate: e } = this.getSafeDates(startDate, endDate);
       sql += ` AND s.ts >= $${queryParams.length + 1} AND s.ts <= $${queryParams.length + 2}`;
       queryParams.push(s, e);
@@ -259,6 +266,7 @@ export class WaferService {
         sql,
         ...queryParams,
       );
+      this.logger.debug(`[getDistinctPoints] Found ${results.length} points for Lot: ${lotId}`);
       return results.map((r) => String(r.point));
     } catch (e) {
       this.logger.error('Error fetching distinct points:', e);
@@ -266,7 +274,7 @@ export class WaferService {
     }
   }
 
-  // Spectrum Trend 데이터 조회
+  // [수정] Trend 조회 (LotID 있을 시 날짜제한 해제 + JOIN 강화 + 필터 추가)
   async getSpectrumTrend(params: WaferQueryParams): Promise<any[]> {
     const {
       eqpId,
@@ -276,7 +284,9 @@ export class WaferService {
       startDate,
       endDate,
       cassetteRcp,
+      stageRcp,
       stageGroup,
+      film,
     } = params;
 
     if (!lotId || !pointId || !waferIds) {
@@ -286,25 +296,21 @@ export class WaferService {
     const waferIdList = waferIds.split(',').map((w) => w.trim());
     if (waferIdList.length === 0) return [];
 
-    let dynamicColumns: string[] = [];
+    let dynamicColumns: string[] = ['t1', 'gof', 'mse'];
     try {
       const configMetrics = await this.prisma.$queryRaw<
         { metric_name: string }[]
       >`
         SELECT metric_name FROM public.cfg_lot_uniformity_metrics WHERE is_excluded = 'N'
       `;
-      const configColNames = configMetrics.map((r) => r.metric_name);
-      if (configColNames.length > 0) {
-        dynamicColumns = configColNames;
-      } else {
-        dynamicColumns = ['t1', 'gof', 'mse'];
+      if (configMetrics.length > 0) {
+        dynamicColumns = configMetrics.map((r) => r.metric_name);
       }
     } catch (e) {
       this.logger.warn(
         'Failed to fetch dynamic metrics config, using defaults.',
         e,
       );
-      dynamicColumns = ['t1', 'gof', 'mse'];
     }
 
     if (!dynamicColumns.includes('gof')) dynamicColumns.push('gof');
@@ -313,6 +319,7 @@ export class WaferService {
     const queryParams: (string | number | Date)[] = [];
     const selectColumns = dynamicColumns.map((col) => `f."${col}"`).join(', ');
 
+    // [수정] JOIN 조건: s.waferid::integer = f.waferid
     let sql = `
       SELECT DISTINCT ON (s."waferid")
         s."waferid", s."wavelengths", s."values", s."ts", s."eqpid",
@@ -320,8 +327,8 @@ export class WaferService {
         ${selectColumns}
       FROM public.plg_onto_spectrum s
       JOIN public.plg_wf_flat f 
-        ON s."lotid" = f."lotid" 
-        AND s."waferid" = f."waferid"::varchar 
+        ON TRIM(s.lotid) = TRIM(f.lotid) 
+        AND s.waferid::integer = f."waferid"
         AND s."point" = f."point"
       WHERE s."lotid" = $1
         AND s."point" = $2
@@ -333,9 +340,19 @@ export class WaferService {
       sql += ` AND f."cassettercp" = $${queryParams.length + 1}`;
       queryParams.push(cassetteRcp);
     }
+    // [추가]
+    if (stageRcp) {
+      sql += ` AND f."stagercp" = $${queryParams.length + 1}`;
+      queryParams.push(stageRcp);
+    }
     if (stageGroup) {
       sql += ` AND f."stagegroup" = $${queryParams.length + 1}`;
       queryParams.push(stageGroup);
+    }
+    // [추가]
+    if (film) {
+      sql += ` AND f."film" = $${queryParams.length + 1}`;
+      queryParams.push(film);
     }
     if (eqpId) {
       sql += ` AND s."eqpid" = $${queryParams.length + 1}`;
@@ -348,12 +365,13 @@ export class WaferService {
     sql += ` AND s."waferid" IN (${waferParams})`;
     queryParams.push(...waferIdList);
 
-    if (startDate) {
+    // [핵심] LotID가 있으면 날짜 필터 생략
+    if (!lotId && startDate) {
       const { startDate: s } = this.getSafeDates(startDate);
       sql += ` AND s."ts" >= $${queryParams.length + 1}`;
       queryParams.push(s);
     }
-    if (endDate) {
+    if (!lotId && endDate) {
       const { endDate: e } = this.getSafeDates(undefined, endDate);
       sql += ` AND s."ts" <= $${queryParams.length + 1}`;
       queryParams.push(e);
@@ -430,7 +448,6 @@ export class WaferService {
 
       const tsRaw = targetDate.toISOString();
 
-      // [수정] 정확한 시간 일치 (=) 사용
       const results = await this.prisma.$queryRawUnsafe<SpectrumRawResult[]>(
         `SELECT "wavelengths", "values" 
          FROM ${tableName}
@@ -486,12 +503,12 @@ export class WaferService {
       pageSize = 20,
     } = params;
 
-    // [수정] getSafeDates 사용
     const { startDate: s, endDate: e } = this.getSafeDates(startDate, endDate);
 
+    // [수정] LotID가 있으면 날짜 제한 해제 (undefined 처리)
     const where: Prisma.PlgWfFlatWhereInput = {
       eqpid: eqpId || undefined,
-      servTs: {
+      servTs: lotId ? undefined : {
         gte: s,
         lte: e,
       },
@@ -568,7 +585,7 @@ export class WaferService {
     };
   }
 
-  // [수정] PDF 이미지 조회 (로컬 파일 제외, HTTP만 사용, 1페이지 Fallback 추가)
+  // [유지] PDF 이미지 조회 (타임아웃 60초 + CMD창 숨김 + 프로세스 직접 제어)
   async getPdfImage(params: WaferQueryParams): Promise<string> {
     const { eqpId, lotId, waferId, dateTime, pointNumber } = params;
 
@@ -587,75 +604,51 @@ export class WaferService {
     });
 
     if (!pdfCheckResult.exists || !pdfCheckResult.url) {
-      this.logger.warn(
-        `[PDF] No matching PDF record found in DB for ${eqpId} @ ${dateTime}`,
-      );
+      this.logger.warn(`[PDF] No record found for ${eqpId} @ ${dateTime}`);
       throw new NotFoundException('PDF file URI not found in database.');
     }
 
     const downloadUrl = pdfCheckResult.url;
     this.logger.log(`[PDF] Target File URI: ${downloadUrl}`);
 
-    // [확인] HTTP/HTTPS 프로토콜만 허용 (로컬 경로 차단)
     if (!downloadUrl.startsWith('http')) {
       this.logger.warn(`[PDF] Skipped non-HTTP URL: ${downloadUrl}`);
       throw new InternalServerErrorException('Only HTTP/HTTPS URLs are supported.');
     }
 
-    // 2. 캐시 경로 생성 (파일명에 pointNumber 유지)
+    // 2. 캐시 경로 생성
     const dateObj = new Date(dateTime as string);
     const dateStr = dateObj.toISOString().slice(0, 10).replace(/-/g, '');
     const cacheFileName = `wafer_${eqpId}_${dateStr}_pt${pointNumber}.png`;
     const cacheFilePath = path.join(os.tmpdir(), cacheFileName);
 
-    // [수정] 3. 캐시 검증: 0바이트 파일은 무조건 삭제하고 재생성
+    // 3. 캐시 검증
     if (fs.existsSync(cacheFilePath)) {
-      const stats = fs.statSync(cacheFilePath);
-      if (stats.size === 0) {
-        this.logger.warn(
-          `[PDF] Found broken cache (0 bytes), deleting: ${cacheFilePath}`,
-        );
-        fs.unlinkSync(cacheFilePath);
-      } else {
+      if (fs.statSync(cacheFilePath).size > 0) {
         try {
-          const imageBuffer = fs.readFileSync(cacheFilePath);
-          return imageBuffer.toString('base64');
-        } catch (e) {
-          this.logger.warn(`[PDF] Failed to read cache: ${e}`);
-        }
+          return fs.readFileSync(cacheFilePath).toString('base64');
+        } catch (e) { /* ignore */ }
+      } else {
+        fs.unlinkSync(cacheFilePath);
       }
     }
 
+    // 4. 다운로드 준비
     const tempId = `${Date.now()}_${Math.random().toString(36).substring(7)}`;
     const tempPdfPath = path.join(os.tmpdir(), `temp_wafer_${tempId}.pdf`);
     const outputPrefix = path.join(os.tmpdir(), `temp_img_${tempId}`);
+    const expectedOutput = `${outputPrefix}.png`;
 
     try {
-      this.logger.debug(`[PDF] Downloading via HTTP...`);
-      const encodedUrl = encodeURI(downloadUrl);
+      this.logger.debug(`[PDF] Downloading: ${downloadUrl}`);
       const writer = fs.createWriteStream(tempPdfPath);
-
       const response = await axios({
-        url: encodedUrl,
+        url: encodeURI(downloadUrl),
         method: 'GET',
         responseType: 'stream',
-        proxy: false, // [중요] 사내망 접속 시 프록시 우회
+        proxy: false,
         timeout: 10000,
       });
-
-      const headers = response.headers as Record<string, unknown>;
-      const contentType = headers['content-type'] as string;
-
-      if (
-        typeof contentType === 'string' &&
-        contentType.toLowerCase().includes('html')
-      ) {
-        writer.close();
-        if (fs.existsSync(tempPdfPath)) fs.unlinkSync(tempPdfPath);
-        throw new Error(
-          `Invalid content-type: ${contentType}. Server returned HTML instead of PDF. Check URL access.`,
-        );
-      }
 
       (response.data as Readable).pipe(writer);
 
@@ -664,125 +657,105 @@ export class WaferService {
         writer.on('error', reject);
       });
 
-      // 5. PDF 파일 검증
-      try {
-        const stats = fs.statSync(tempPdfPath);
-        if (stats.size === 0) {
-          throw new Error('Downloaded file size is 0 bytes.');
-        }
-
-        const fd = fs.openSync(tempPdfPath, 'r');
-        const headerBuffer = Buffer.alloc(100);
-        const bytesRead = fs.readSync(fd, headerBuffer, 0, 100, 0);
-        fs.closeSync(fd);
-        const headerString = headerBuffer.toString('utf8', 0, bytesRead);
-
-        if (bytesRead < 4 || !headerString.startsWith('%PDF')) {
-          this.logger.error(
-            `[PDF Error] Invalid File Header: ${headerString.substring(0, 50)}...`,
-          );
-          throw new Error(
-            'File signature mismatch. The downloaded file is NOT a PDF.',
-          );
-        }
-      } catch (checkErr) {
-        if (fs.existsSync(tempPdfPath)) fs.unlinkSync(tempPdfPath);
-        throw checkErr;
+      // 5. 파일 검증
+      if (!fs.existsSync(tempPdfPath) || fs.statSync(tempPdfPath).size === 0) {
+        throw new Error('Downloaded PDF is empty or missing.');
       }
 
-      // 6. 이미지 변환 (Poppler)
+      // 6. 변환 실행 함수 (pdftocairo 직접 실행)
       const popplerBinPath = process.env.POPPLER_BIN_PATH;
-      if (!popplerBinPath) {
-        throw new Error(
-          'POPPLER_BIN_PATH is not defined in environment variables.',
-        );
-      }
-
-      // [수정] Point 번호 페이지 시도 -> 실패 시 1페이지 Fallback
+      if (!popplerBinPath) throw new Error('POPPLER_BIN_PATH is missing.');
+      const pdftocairoExe = path.join(popplerBinPath, 'pdftocairo.exe');
+      
       let targetPage = Number(pointNumber);
-      // 페이지 번호가 유효하지 않으면(0 이하) 1페이지로 설정
       if (isNaN(targetPage) || targetPage < 1) targetPage = 1;
 
-      this.logger.debug(
-        `[PDF] Converting Page ${targetPage} using Poppler...`,
-      );
+      const runConversion = async (page: number) => {
+        if (fs.existsSync(expectedOutput)) {
+            try { fs.unlinkSync(expectedOutput); } catch(e) {}
+        }
 
-      let opts = {
-        format: 'png',
-        out_dir: os.tmpdir(),
-        out_prefix: path.basename(outputPrefix),
-        page: targetPage,
-        binPath: popplerBinPath,
+        const args = [
+          '-png',
+          '-f', String(page),
+          '-l', String(page),
+          '-singlefile',
+          tempPdfPath,
+          outputPrefix
+        ];
+
+        this.logger.debug(`[PDF] Executing: ${pdftocairoExe} (Page ${page})`);
+        
+        const startTime = Date.now();
+        await execFileAsync(pdftocairoExe, args, {
+          timeout: 60000, // 타임아웃 60초
+          windowsHide: true,
+          maxBuffer: 1024 * 1024 * 10 
+        });
+        const duration = Date.now() - startTime;
+        this.logger.debug(`[PDF] Conversion took ${duration}ms`);
       };
 
-      const popplerLib = poppler as unknown as PopplerModule;
-      
+      // 7. 실행 및 Fallback 로직
+      let conversionSuccess = false;
+
+      // 시도 1: 요청 페이지
       try {
-        await popplerLib.convert(tempPdfPath, opts);
-      } catch (err) {
-        this.logger.warn(`[PDF] Page ${targetPage} failed. Falling back to Page 1.`);
-        // Fallback to Page 1
-        targetPage = 1;
-        opts.page = 1;
-        await popplerLib.convert(tempPdfPath, opts);
+        await runConversion(targetPage);
+        if (fs.existsSync(expectedOutput) && fs.statSync(expectedOutput).size > 0) {
+          conversionSuccess = true;
+        }
+      } catch (err: any) {
+        const errTime = err.killed ? ' (Timed out after 60s)' : '';
+        this.logger.warn(`[PDF] Page ${targetPage} failed${errTime}: ${err.message}`);
+        if (err.stderr) this.logger.warn(`[PDF] Stderr: ${err.stderr}`);
       }
 
-      // 변환된 이미지 찾기
-      const dirFiles = fs.readdirSync(os.tmpdir());
-      const generatedImageName = dirFiles.find(
-        (f) => f.startsWith(path.basename(outputPrefix)) && f.endsWith('.png'),
-      );
+      // 시도 2: 실패 시 1페이지로 재시도 (안정성 강화)
+      if (!conversionSuccess) {
+        this.logger.warn(`[PDF] Retrying with Page 1 after 500ms delay...`);
+        
+        // 0.5초 대기 (파일 Lock 해제)
+        await new Promise(resolve => setTimeout(resolve, 500));
 
-      if (!generatedImageName) {
-        throw new Error(
-          'Poppler finished but no PNG file was created.',
-        );
+        try {
+          await runConversion(1);
+          if (fs.existsSync(expectedOutput) && fs.statSync(expectedOutput).size > 0) {
+            conversionSuccess = true;
+            this.logger.log(`[PDF] Fallback to Page 1 successful.`);
+          }
+        } catch (err: any) {
+          const errTime = err.killed ? ' (Timed out after 60s)' : '';
+          this.logger.error(`[PDF] Even Page 1 failed${errTime}. Reason: ${err.message}`);
+        }
       }
 
-      const generatedImagePath = path.join(os.tmpdir(), generatedImageName);
-
-      // 파일 크기 체크
-      const imgStats = fs.statSync(generatedImagePath);
-      if (imgStats.size === 0) {
-        throw new Error('Generated PNG file is 0 bytes.');
+      // 8. 결과 반환
+      if (!conversionSuccess || !fs.existsSync(expectedOutput)) {
+        throw new Error('Poppler finished but PNG file was not created or empty.');
       }
 
-      // 캐시 저장
       try {
-        fs.copyFileSync(generatedImagePath, cacheFilePath);
-        fs.unlinkSync(generatedImagePath);
-      } catch (e) {
-        this.logger.warn(`[PDF] Failed to save cache: ${e}`);
-      }
+        fs.copyFileSync(expectedOutput, cacheFilePath);
+        fs.unlinkSync(expectedOutput);
+      } catch (e) { /* ignore */ }
 
-      const finalPath = fs.existsSync(cacheFilePath)
-        ? cacheFilePath
-        : generatedImagePath;
+      const finalPath = fs.existsSync(cacheFilePath) ? cacheFilePath : expectedOutput;
       const imageBuffer = fs.readFileSync(finalPath);
 
-      this.logger.log(
-        `[PDF] Success! Returning image size: ${imageBuffer.length} bytes`,
-      );
-
-      try {
-        if (fs.existsSync(tempPdfPath)) fs.unlinkSync(tempPdfPath);
-      } catch {
-        /* ignore */
-      }
+      // 청소
+      try { if (fs.existsSync(tempPdfPath)) fs.unlinkSync(tempPdfPath); } catch {}
 
       return imageBuffer.toString('base64');
+
     } catch (e) {
-      try {
-        if (fs.existsSync(tempPdfPath)) fs.unlinkSync(tempPdfPath);
-      } catch {
-        /* ignore */
-      }
+      try { 
+        if (fs.existsSync(tempPdfPath)) fs.unlinkSync(tempPdfPath); 
+        if (fs.existsSync(expectedOutput)) fs.unlinkSync(expectedOutput);
+      } catch { /* ignore */ }
 
       const error = e as { code?: string; message?: string };
-      this.logger.error(
-        `[ERROR] PDF Processing Failed. URL: ${downloadUrl}`,
-        e,
-      );
+      this.logger.error(`[ERROR] PDF Processing Failed. URL: ${downloadUrl}`, e);
       throw new InternalServerErrorException(
         `Failed to process PDF: ${error.message || 'Unknown error'}`,
       );
@@ -795,7 +768,6 @@ export class WaferService {
   ): Promise<{ exists: boolean; url: string | null }> {
     const { eqpId, lotId, waferId, servTs, dateTime } = params;
 
-    // dateTime 우선, 없으면 servTs 사용
     const targetTimeVal = dateTime || servTs;
 
     if (!eqpId || !targetTimeVal) return { exists: false, url: null };
@@ -810,7 +782,6 @@ export class WaferService {
         `[PDF Search] Eqp: ${eqpId}, TargetTime: ${tsStr} (Exact Match Only)`,
       );
 
-      // [수정] 범위 검색 제거, 정확한 일치 검색 사용
       const results = await this.prisma.$queryRawUnsafe<PdfResult[]>(
         `SELECT file_uri, datetime FROM public.plg_wf_map 
           WHERE eqpid = $1 
@@ -820,13 +791,10 @@ export class WaferService {
         tsStr,
       );
 
-      this.logger.debug(`[PDF Search] Found ${results.length} exact candidates.`);
-
       if (!results || results.length === 0) {
         return { exists: false, url: null };
       }
 
-      // 후보군 필터링 (LotID, WaferID 포함 여부)
       let candidates = results;
 
       if (lotId) {
@@ -851,7 +819,6 @@ export class WaferService {
       }
 
       if (candidates.length > 0) {
-        // 정확한 일치 중 첫 번째 반환
         this.logger.log(`[PDF Match] Exact Match Found: ${candidates[0].file_uri}`);
         return { exists: true, url: candidates[0].file_uri };
       }
@@ -877,7 +844,6 @@ export class WaferService {
       const tsRaw = new Date(ts).toISOString();
       const tableName = 'public.plg_onto_spectrum';
 
-      // [수정] 정확한 시간 일치, LIMIT 제거하여 EXP/GEN 모두 조회
       const results = await this.prisma.$queryRawUnsafe<SpectrumRawResult[]>(
         `SELECT "class", "wavelengths", "values" 
          FROM ${tableName}
@@ -895,13 +861,9 @@ export class WaferService {
       );
 
       if (!results || results.length === 0) {
-        this.logger.warn(
-          `[Spectrum] No data found for ${lotId} W${waferId} Pt${pointNumber} @ ${tsRaw}`,
-        );
         return [];
       }
 
-      // 중복 제거 (같은 class가 여러 개일 경우 1개만 남김)
       const uniqueResults = new Map<string, SpectrumRawResult>();
       results.forEach((r) => {
         if (!uniqueResults.has(r.class)) {
@@ -1126,19 +1088,20 @@ export class WaferService {
       if (p.lotId) sql += ` AND lotid = '${String(p.lotId)}'`;
       if (p.waferId) sql += ` AND waferid = ${Number(p.waferId)}`;
     } else {
-      if (p.startDate) {
-        // [수정] getSafeDates 사용
-        const { startDate: s } = this.getSafeDates(p.startDate);
-        const sStr = s.toISOString(); // Postgres에서 파라미터로 넘길 땐 ISO도 OK지만 여기서는 raw sql string building이라 주의 필요
-        // 그러나 buildUniqueWhere는 주로 포인트 데이터 등 세부 조회용이라 serv_ts string을 직접 넘기는 경우가 많음.
-        // 여기서는 안전하게 param 변수 대신 string literal로 넣고 있으므로 ISO string으로 변환
-        sql += ` AND serv_ts >= '${sStr}'`;
+      // [수정] LotID가 있으면 날짜 필터 무시 (전체 기간 검색)
+      if (!p.lotId) {
+        if (p.startDate) {
+          const { startDate: s } = this.getSafeDates(p.startDate);
+          const sStr = s.toISOString(); 
+          sql += ` AND serv_ts >= '${sStr}'`;
+        }
+        if (p.endDate) {
+          const { endDate: e } = this.getSafeDates(undefined, p.endDate);
+          const eStr = e.toISOString();
+          sql += ` AND serv_ts <= '${eStr}'`;
+        }
       }
-      if (p.endDate) {
-        const { endDate: e } = this.getSafeDates(undefined, p.endDate);
-        const eStr = e.toISOString();
-        sql += ` AND serv_ts <= '${eStr}'`;
-      }
+      
       if (p.lotId) sql += ` AND lotid = '${String(p.lotId)}'`;
       if (p.waferId) sql += ` AND waferid = ${Number(p.waferId)}`;
       if (p.cassetteRcp)
@@ -1156,7 +1119,6 @@ export class WaferService {
 
     if (!startDate || !endDate || !cassetteRcp) return [];
 
-    // [수정] getSafeDates 사용
     const { startDate: s, endDate: e } = this.getSafeDates(startDate, endDate);
 
     let sql = `
@@ -1223,7 +1185,6 @@ export class WaferService {
 
     const selectCols = metrics.map((m) => `"${m}"`).join(', ');
 
-    // [수정] getSafeDates 사용
     const { startDate: s, endDate: e } = this.getSafeDates(startDate, endDate);
 
     let sql = `
@@ -1265,7 +1226,6 @@ export class WaferService {
     if (!eqpId || !startDate || !endDate) return [];
 
     try {
-      // [수정] getSafeDates 사용
       const { startDate: s, endDate: e } = this.getSafeDates(startDate, endDate);
 
       const queryParams: (string | number | Date)[] = [eqpId, s, e];
@@ -1285,6 +1245,7 @@ export class WaferService {
         queryParams.push(film);
       }
 
+      // [수정] JOIN 조건: s.waferid::integer = f.waferid
       const sql = `
         SELECT 
           s.ts, s.lotid, s.waferid, s.point, s.wavelengths, s."values"
@@ -1292,7 +1253,7 @@ export class WaferService {
         JOIN public.plg_wf_flat f 
           ON s.eqpid = f.eqpid 
           AND s.lotid = f.lotid 
-          AND s.waferid = f.waferid::varchar 
+          AND s.waferid::integer = f.waferid
           AND s.point = f.point
         WHERE s.eqpid = $1
           AND s.ts >= $2
