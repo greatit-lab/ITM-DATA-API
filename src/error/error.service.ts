@@ -17,25 +17,21 @@ export class ErrorService {
 
   constructor(private prisma: PrismaService) {}
 
-  // [Helper] 날짜 파싱 및 기본값 설정 (Local Time 문자열 그대로 범위 설정)
+  // [Helper] 날짜 파싱 및 기본값 설정
   private getSafeDates(start?: string | Date, end?: string | Date): { startDate: Date, endDate: Date } {
     const now = new Date();
     
-    // 시작일: 입력값 또는 7일 전
     let startDate = start ? new Date(start) : new Date();
     if (isNaN(startDate.getTime()) || !start) {
         startDate = new Date();
         startDate.setDate(startDate.getDate() - 7);
     }
-    // 시간 부분을 00:00:00.000 으로 설정
     startDate.setHours(0, 0, 0, 0);
 
-    // 종료일: 입력값 또는 오늘
     let endDate = end ? new Date(end) : now;
     if (isNaN(endDate.getTime())) {
         endDate = now;
     }
-    // 시간 부분을 23:59:59.999 로 설정 (하루 전체 포함)
     endDate.setHours(23, 59, 59, 999);
 
     return { startDate, endDate };
@@ -47,10 +43,7 @@ export class ErrorService {
     const { startDate, endDate } = this.getSafeDates(start, end);
 
     const whereCondition: Prisma.PlgErrorWhereInput = {
-      timeStamp: {
-        gte: startDate,
-        lte: endDate,
-      },
+      timeStamp: { gte: startDate, lte: endDate },
     };
 
     if (eqpId) {
@@ -72,9 +65,7 @@ export class ErrorService {
     }
 
     try {
-      const totalErrorCount = await this.prisma.plgError.count({
-        where: whereCondition,
-      });
+      const totalErrorCount = await this.prisma.plgError.count({ where: whereCondition });
 
       const byEqp = await this.prisma.plgError.groupBy({
         by: ['eqpid'],
@@ -140,22 +131,12 @@ export class ErrorService {
       eqpFilter = `AND e.eqpid = $${queryParams.length + 1}`;
       queryParams.push(eqpId.trim());
     } else if (site || sdwt) {
-      let joinFilter = '';
-      if (site) {
-        joinFilter += ` AND s.site = '${site}'`;
-      }
-      if (sdwt) {
-        joinFilter += ` AND s.sdwt = '${sdwt}'`;
-      }
-      
-      if (joinFilter) {
-        const eqpList = await this.getEqpIdsBySiteSdwt(site, sdwt);
-        if (eqpList.length > 0) {
-            const eqpStr = eqpList.map(id => `'${id}'`).join(',');
-            eqpFilter = `AND e.eqpid IN (${eqpStr})`;
-        } else {
-            return []; 
-        }
+      const eqpList = await this.getEqpIdsBySiteSdwt(site, sdwt);
+      if (eqpList.length > 0) {
+          const eqpStr = eqpList.map(id => `'${id}'`).join(',');
+          eqpFilter = `AND e.eqpid IN (${eqpStr})`;
+      } else {
+          return []; 
       }
     }
 
@@ -171,7 +152,6 @@ export class ErrorService {
 
     try {
       const result = await this.prisma.$queryRawUnsafe<any[]>(sql, ...queryParams);
-      
       return result.map(r => ({
         date: typeof r.date === 'string' ? r.date : new Date(r.date).toISOString().split('T')[0],
         count: r.count
@@ -182,16 +162,13 @@ export class ErrorService {
     }
   }
 
-  // 3. 에러 목록 조회
+  // 3. [수정] 에러 목록 조회 (필드 매핑 강화)
   async getErrorList(params: ErrorQueryParams & { page?: number, pageSize?: number }) {
     const { site, sdwt, eqpId, start, end, page = 0, pageSize = 50 } = params;
     const { startDate, endDate } = this.getSafeDates(start, end);
 
     const whereCondition: Prisma.PlgErrorWhereInput = {
-      timeStamp: {
-        gte: startDate,
-        lte: endDate,
-      },
+      timeStamp: { gte: startDate, lte: endDate },
     };
 
     if (eqpId) {
@@ -206,19 +183,29 @@ export class ErrorService {
     }
 
     try {
+      // 페이지네이션 값 안전 변환
+      const take = Number(pageSize) || 50;
+      const skip = (Number(page) || 0) * take;
+
       const [total, items] = await this.prisma.$transaction([
         this.prisma.plgError.count({ where: whereCondition }),
         this.prisma.plgError.findMany({
           where: whereCondition,
-          take: Number(pageSize),
-          skip: Number(page) * Number(pageSize),
+          take: take,
+          skip: skip,
           orderBy: { timeStamp: 'desc' },
         }),
       ]);
 
+      // [핵심] 프론트엔드 DataTable 필드명과 정확히 일치하도록 매핑
       const mappedItems = items.map((item: any) => ({
-        ...item,
-        eqpId: item.eqpid,
+        eqpId: item.eqpid,           // Frontend: eqpId
+        errorId: item.errorId,       // Frontend: errorId
+        errorLabel: item.errorLabel, // Frontend: errorLabel
+        errorDesc: item.errorDesc,   // Frontend: errorDesc
+        timeStamp: item.timeStamp,   // Frontend: timeStamp
+        extraMessage1: item.extraMessage1,
+        extraMessage2: item.extraMessage2,
       }));
 
       return { totalItems: total, items: mappedItems };
