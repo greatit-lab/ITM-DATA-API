@@ -242,4 +242,21 @@ export class BoardService {
       throw new InternalServerErrorException('댓글 삭제 중 오류가 발생했습니다.');
     }
   }
+
+  // 10. [추가] 팝업 공지사항 조회
+  async getPopupNotices() {
+    try {
+      return await this.prisma.sysBoard.findMany({
+        where: {
+          category: 'NOTICE',
+          isPopup: 'Y',
+          // 필요 시 status: 'OPEN' 등 추가 가능
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+    } catch (error) {
+      this.logger.error(`Failed to getPopupNotices: ${error.message}`, error.stack);
+      throw new InternalServerErrorException('팝업 공지 조회 중 오류가 발생했습니다.');
+    }
+  }
 }
