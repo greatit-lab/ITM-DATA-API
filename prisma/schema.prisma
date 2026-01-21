@@ -383,6 +383,8 @@ model SysBoard {
   
   views       Int      @default(0)
   isSecret    String   @default("N") @map("is_secret") @db.Char(1) // 비밀글 여부
+  // [추가] 팝업 설정 여부 (Y: 팝업 띄움, N: 일반글)
+  isPopup     String   @default("N") @map("is_popup") @db.Char(1) 
   status      String   @default("OPEN") @db.VarChar(20) // OPEN, ANSWERED, CLOSED
   
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamp(0)
