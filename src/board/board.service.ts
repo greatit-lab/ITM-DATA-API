@@ -5,7 +5,6 @@ import { CreatePostDto, CreateCommentDto } from './dto/board.dto';
 
 @Injectable()
 export class BoardService {
-  // [개선] 로그 출력을 위한 Logger 인스턴스 생성
   private readonly logger = new Logger(BoardService.name);
 
   constructor(private prisma: PrismaService) {}
@@ -15,7 +14,6 @@ export class BoardService {
     try {
       const skip = (page - 1) * limit;
       
-      // 검색 조건 구성
       const whereCondition: any = {};
       if (category && category !== 'ALL') {
         whereCondition.category = category;
@@ -28,7 +26,7 @@ export class BoardService {
         ];
       }
 
-      // 데이터 조회
+      // 1. 게시글 데이터 조회 (author 관계 사용)
       const [total, posts] = await Promise.all([
         this.prisma.sysBoard.count({ where: whereCondition }),
         this.prisma.sysBoard.findMany({
@@ -37,13 +35,36 @@ export class BoardService {
           take: limit,
           orderBy: { createdAt: 'desc' },
           include: {
-            _count: { select: { comments: true } }, // 댓글 수 포함
+            _count: { select: { comments: true } },
+            author: true, // [수정] user -> author (Schema 관계명 일치)
           },
         }),
       ]);
 
+      // 2. 작성자들의 권한(Role) 정보 조회 (CfgAdminUser 테이블)
+      // 게시글 작성자 ID 목록 추출
+      const authorIds = [...new Set(posts.map(p => p.authorId))];
+      
+      // 관리자 테이블에서 해당 ID들의 권한 조회
+      const adminUsers = await this.prisma.cfgAdminUser.findMany({
+        where: { loginId: { in: authorIds } },
+        select: { loginId: true, role: true }
+      });
+
+      // ID별 권한 맵 생성
+      const roleMap = new Map(adminUsers.map(u => [u.loginId, u.role]));
+
+      // 3. 데이터 병합 (Frontend가 post.user.role로 접근 가능하도록 구조 변환)
+      const mappedPosts = posts.map(post => ({
+        ...post,
+        user: { // Frontend 호환성을 위한 가상 객체
+          ...post.author,
+          role: roleMap.get(post.authorId) || 'USER' // 관리자 아니면 USER
+        }
+      }));
+
       return {
-        data: posts,
+        data: mappedPosts,
         meta: {
           total,
           page,
@@ -51,7 +72,6 @@ export class BoardService {
         },
       };
     } catch (error) {
-      // [개선] 에러 발생 시 정확한 원인을 로그로 출력
       this.logger.error(`Failed to getPosts: ${error.message}`, error.stack);
       throw new InternalServerErrorException('게시글 목록을 불러오는 중 오류가 발생했습니다.');
     }
@@ -63,22 +83,53 @@ export class BoardService {
       const post = await this.prisma.sysBoard.findUnique({
         where: { postId },
         include: {
+          author: true, // [수정] user -> author
           comments: {
-            orderBy: { createdAt: 'asc' }, // 댓글은 작성순
+            orderBy: { createdAt: 'asc' },
+            include: {
+              author: true // [수정] user -> author
+            }
           },
-          files: true, // 첨부 파일 포함
+          files: true,
         },
       });
 
       if (!post) throw new NotFoundException(`Post #${postId} not found`);
 
-      // 조회수 증가 (비동기 처리 - 에러나도 무시)
+      // 조회수 증가
       this.prisma.sysBoard.update({
         where: { postId },
         data: { views: { increment: 1 } },
       }).catch(e => this.logger.warn(`Failed to update views: ${e.message}`));
 
-      return post;
+      // 권한 정보 조회 (게시글 작성자 + 댓글 작성자들)
+      const userIds = new Set<string>();
+      userIds.add(post.authorId);
+      post.comments.forEach(c => userIds.add(c.authorId));
+
+      const adminUsers = await this.prisma.cfgAdminUser.findMany({
+        where: { loginId: { in: [...userIds] } },
+        select: { loginId: true, role: true }
+      });
+      const roleMap = new Map(adminUsers.map(u => [u.loginId, u.role]));
+
+      // 데이터 병합 및 구조 변환
+      const mappedPost = {
+        ...post,
+        user: { // 게시글 작성자 권한
+          ...post.author,
+          role: roleMap.get(post.authorId) || 'USER'
+        },
+        comments: post.comments.map(comment => ({
+          ...comment,
+          user: { // 댓글 작성자 권한
+            ...comment.author,
+            role: roleMap.get(comment.authorId) || 'USER'
+          }
+        }))
+      };
+
+      return mappedPost;
     } catch (error) {
       if (error instanceof NotFoundException) throw error;
       this.logger.error(`Failed to getPostById(${postId}): ${error.message}`, error.stack);
@@ -104,7 +155,7 @@ export class BoardService {
     }
   }
 
-  // 4. [추가] 게시글 수정
+  // 4. 게시글 수정
   async updatePost(postId: number, data: any) {
     try {
       return await this.prisma.sysBoard.update({
@@ -135,19 +186,12 @@ export class BoardService {
     }
   }
 
-  // 6. [수정] 게시글 삭제 (트랜잭션 적용)
+  // 6. 게시글 삭제
   async deletePost(postId: number) {
     try {
-      // 댓글이 있는 게시글 삭제 시 FK 제약조건 오류를 방지하기 위해 트랜잭션 사용
       return await this.prisma.$transaction([
-        // 1. 해당 게시글의 모든 댓글 먼저 삭제
-        this.prisma.sysBoardComment.deleteMany({
-          where: { postId },
-        }),
-        // 2. 게시글 삭제
-        this.prisma.sysBoard.delete({
-          where: { postId },
-        }),
+        this.prisma.sysBoardComment.deleteMany({ where: { postId } }),
+        this.prisma.sysBoard.delete({ where: { postId } }),
       ]);
     } catch (error) {
       this.logger.error(`Failed to deletePost: ${error.message}`, error.stack);
