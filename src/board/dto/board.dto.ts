@@ -24,6 +24,12 @@ export class CreatePostDto {
   @IsOptional()
   @IsEnum(['Y', 'N'])
   isSecret?: string;
+
+  // [추가] 팝업 설정 여부
+  @IsString()
+  @IsOptional()
+  @IsEnum(['Y', 'N'])
+  isPopup?: string;
 }
 
 // 댓글 생성 DTO
