@@ -1,4 +1,4 @@
-// [전체 코드 교체] ITM-Data-API/src/app.module.ts
+// ITM-Data-API/src/app.module.ts
 import { Module, NestModule, MiddlewareConsumer, Logger } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
 
@@ -14,6 +14,9 @@ import { AuthModule } from './auth/auth.module';
 import { MenuModule } from './menu/menu.module';
 import { FiltersModule } from './filters/filters.module';
 
+// [New] 게시판 모듈 추가 (이 부분이 없어서 404 오류 발생)
+import { BoardModule } from './board/board.module';
+
 // 3. 비즈니스 로직 이관 모듈
 import { DashboardModule } from './dashboard/dashboard.module';
 import { HealthModule } from './health/health.module';
@@ -23,14 +26,22 @@ import { EquipmentModule } from './equipment/equipment.module';
 
 @Module({
   imports: [
+    // 1. 데이터 모듈
     WaferModule,
     PreAlignModule,
     PerformanceModule,
     LampLifeModule,
     ErrorModule,
+
+    // 2. 인증/공통 모듈
     AuthModule,
     MenuModule,
     FiltersModule,
+
+    // [New] 게시판 모듈 등록
+    BoardModule,
+
+    // 3. 비즈니스 모듈
     DashboardModule,
     HealthModule,
     InfraModule,
@@ -56,7 +67,7 @@ export class AppModule implements NestModule {
         res.on('finish', () => {
           const { statusCode } = res;
           const duration = Date.now() - start;
-          // [디버깅] 응답 완료 로그 (404가 뜨는지 여기서 확인 가능)
+          // [디버깅] 응답 완료 로그
           this.logger.log(
             `📤 Response: ${method} ${originalUrl} ${statusCode} - ${duration}ms`,
           );
