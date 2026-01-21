@@ -147,6 +147,7 @@ export class BoardService {
           authorId: data.authorId,
           category: data.category || 'QNA',
           isSecret: data.isSecret || 'N',
+          isPopup: data.isPopup || 'N', // [추가] 팝업 여부 저장
         },
       });
     } catch (error) {
@@ -165,6 +166,7 @@ export class BoardService {
           content: data.content,
           category: data.category,
           isSecret: data.isSecret,
+          isPopup: data.isPopup, // [추가] 팝업 여부 수정
         },
       });
     } catch (error) {
@@ -213,6 +215,31 @@ export class BoardService {
     } catch (error) {
       this.logger.error(`Failed to createComment: ${error.message}`, error.stack);
       throw new InternalServerErrorException('댓글 작성 중 오류가 발생했습니다.');
+    }
+  }
+
+  // 8. 댓글 수정
+  async updateComment(commentId: number, content: string) {
+    try {
+      return await this.prisma.sysBoardComment.update({
+        where: { commentId },
+        data: { content },
+      });
+    } catch (error) {
+      this.logger.error(`Failed to updateComment: ${error.message}`, error.stack);
+      throw new InternalServerErrorException('댓글 수정 중 오류가 발생했습니다.');
+    }
+  }
+
+  // 9. 댓글 삭제
+  async deleteComment(commentId: number) {
+    try {
+      return await this.prisma.sysBoardComment.delete({
+        where: { commentId },
+      });
+    } catch (error) {
+      this.logger.error(`Failed to deleteComment: ${error.message}`, error.stack);
+      throw new InternalServerErrorException('댓글 삭제 중 오류가 발생했습니다.');
     }
   }
 }
