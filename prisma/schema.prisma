@@ -433,3 +433,19 @@ model SysFile {
 
   @@map("sys_file")
 }
+
+// ==========================================
+// [New Feature] System Alerts (알림)
+// ==========================================
+
+model SysAlert {
+  id        Int      @id @default(autoincrement())
+  userId    String   @map("user_id") // 알림 받을 사용자 ID
+  type      String   // 알림 유형 (예: 'BOARD_REPLY')
+  message   String   // 알림 내용
+  link      String?  // 클릭 시 이동할 링크
+  isRead    Boolean  @default(false) @map("is_read")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("sys_alert")
+}
