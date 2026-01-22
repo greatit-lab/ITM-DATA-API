@@ -25,7 +25,6 @@ export class CreatePostDto {
   @IsEnum(['Y', 'N'])
   isSecret?: string;
 
-  // [추가] 팝업 설정 여부
   @IsString()
   @IsOptional()
   @IsEnum(['Y', 'N'])
@@ -47,4 +46,9 @@ export class CreateCommentDto {
 
   @IsOptional()
   parentId?: number; // 대댓글일 경우 부모 ID
+
+  // [추가] 댓글 작성 시 게시글 상태 변경 옵션 (예: 'ANSWERED')
+  @IsString()
+  @IsOptional()
+  status?: string;
 }
