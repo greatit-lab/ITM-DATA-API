@@ -14,8 +14,9 @@ import { AuthModule } from './auth/auth.module';
 import { MenuModule } from './menu/menu.module';
 import { FiltersModule } from './filters/filters.module';
 
-// [New] 게시판 모듈 추가 (이 부분이 없어서 404 오류 발생)
+// [New] 게시판 및 알림 모듈
 import { BoardModule } from './board/board.module';
+import { AlertModule } from './alert/alert.module'; // [추가]
 
 // 3. 비즈니스 로직 이관 모듈
 import { DashboardModule } from './dashboard/dashboard.module';
@@ -38,8 +39,9 @@ import { EquipmentModule } from './equipment/equipment.module';
     MenuModule,
     FiltersModule,
 
-    // [New] 게시판 모듈 등록
+    // [New] 게시판 및 알림 모듈 등록
     BoardModule,
+    AlertModule, // [추가]
 
     // 3. 비즈니스 모듈
     DashboardModule,
