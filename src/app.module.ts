@@ -24,6 +24,7 @@ import { HealthModule } from './health/health.module';
 import { InfraModule } from './infra/infra.module';
 import { AdminModule } from './admin/admin.module';
 import { EquipmentModule } from './equipment/equipment.module';
+import { ManualModule } from './manual/manual.module';
 
 @Module({
   imports: [
@@ -49,6 +50,7 @@ import { EquipmentModule } from './equipment/equipment.module';
     InfraModule,
     AdminModule,
     EquipmentModule,
+    ManualModule,
   ],
   controllers: [],
   providers: [PrismaService],
