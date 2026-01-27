@@ -3,7 +3,7 @@ import { Controller, Get, Post, Param, Query, ParseIntPipe } from '@nestjs/commo
 import { AlertService } from './alert.service';
 
 @Controller('alert')
-// [수정] @UseGuards(JwtAuthGuard) 제거 -> 인증 없이 접근 허용 (내부망 통신)
+// [참고] 내부망 통신용이므로 인증 가드(@UseGuards)는 제외됨
 export class AlertController {
   constructor(private readonly alertService: AlertService) {}
 
@@ -11,7 +11,10 @@ export class AlertController {
   // GET /alert?userId=gily.choi
   @Get()
   async getMyAlerts(@Query('userId') userId: string) {
-    if (!userId) return []; // userId 없으면 빈 배열 반환
+    // userId 유효성 검사 강화
+    if (!userId || userId === 'undefined' || userId === 'null') {
+      return []; 
+    }
     return this.alertService.getMyAlerts(userId);
   }
 
@@ -19,7 +22,9 @@ export class AlertController {
   // GET /alert/unread-count?userId=gily.choi
   @Get('unread-count')
   async getUnreadCount(@Query('userId') userId: string) {
-    if (!userId) return 0;
+    if (!userId || userId === 'undefined' || userId === 'null') {
+      return 0;
+    }
     return this.alertService.getUnreadCount(userId);
   }
 
