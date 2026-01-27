@@ -2,12 +2,17 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { Logger } from '@nestjs/common';
+import { json, urlencoded } from 'express'; // [추가] express 모듈
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
 
   // NestJS 애플리케이션 생성 (HTTPS 옵션 제거 -> HTTP 모드)
   const app = await NestFactory.create(AppModule);
+
+  // [추가] 요청 본문(Body) 크기 제한을 50MB로 증가 (이미지 붙여넣기 대응)
+  app.use(json({ limit: '50mb' }));
+  app.use(urlencoded({ extended: true, limit: '50mb' }));
 
   // 1. Global Prefix 설정
   app.setGlobalPrefix('api');
