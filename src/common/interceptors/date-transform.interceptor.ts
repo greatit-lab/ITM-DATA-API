@@ -8,9 +8,9 @@ import {
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
 import dayjs from 'dayjs';
-import utc from 'dayjs/plugin/utc'; // [추가] UTC 플러그인
+import utc from 'dayjs/plugin/utc'; 
 
-// [설정] UTC 모드 활성화 (시차 자동 계산 방지)
+// [설정] UTC 모드 활성화
 dayjs.extend(utc);
 
 @Injectable()
@@ -27,11 +27,10 @@ export class DateTransformInterceptor implements NestInterceptor {
       return value;
     }
 
-    // 1. Date 객체인 경우: UTC 기준 문자열로 변환 (DB 값 그대로 유지)
+    // 1. Date 객체인 경우: 표준 포맷(YYYY) 문자열로 변환
     if (value instanceof Date) {
-      // .utc()를 사용하여 서버 로컬 시간대(KST)의 간섭을 받지 않고
-      // Date 객체가 가진 시간 숫자 그대로를 문자열로 출력합니다.
-      return dayjs(value).utc().format('YY-MM-DD HH:mm:ss');
+      // [핵심 수정] 'YY' -> 'YYYY'로 변경 (26-01-28 -> 2026-01-28)
+      return dayjs(value).utc().format('YYYY-MM-DD HH:mm:ss');
     }
 
     // 2. 배열인 경우: 내부 아이템 재귀 변환
@@ -52,7 +51,6 @@ export class DateTransformInterceptor implements NestInterceptor {
       return result;
     }
 
-    // 그 외(숫자, 문자열 등)는 그대로 반환
     return value;
   }
 }
