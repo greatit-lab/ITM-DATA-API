@@ -2,10 +2,27 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { Prisma } from '@prisma/client';
+// [수정] import * as dayjs -> import dayjs (Default Import 사용)
+import dayjs from 'dayjs';
+// [수정] import * as utc -> import utc (Default Import 사용)
+import utc from 'dayjs/plugin/utc';
+
+// [핵심] UTC 플러그인 활성화
+dayjs.extend(utc);
 
 @Injectable()
 export class PerformanceService {
   constructor(private prisma: PrismaService) {}
+
+  /**
+   * [핵심 유틸] 날짜 문자열을 UTC Date 객체로 변환
+   * 예: "2026-01-28 14:00:00" -> 2026-01-28T14:00:00.000Z
+   * 이렇게 해야 Prisma가 DB에 쿼리를 날릴 때 "14:00:00" 시간을 그대로 유지함.
+   */
+  private parseDate(dateStr: string): Date {
+    // 로컬 시간대 변환 없이, 입력된 문자열 그대로를 UTC 시간으로 해석
+    return dayjs.utc(dateStr).toDate();
+  }
 
   // 1. 장비 성능 이력 조회
   async getPerformanceHistory(
@@ -15,8 +32,8 @@ export class PerformanceService {
   ) {
     const where: Prisma.EqpPerfWhereInput = {
       servTs: {
-        gte: new Date(startDate),
-        lte: new Date(endDate),
+        gte: this.parseDate(startDate), // [수정] UTC 강제 변환 유틸 사용
+        lte: this.parseDate(endDate),   // [수정] UTC 강제 변환 유틸 사용
       },
     };
 
@@ -52,8 +69,8 @@ export class PerformanceService {
       where: {
         eqpid: eqpId,
         servTs: {
-          gte: new Date(startDate),
-          lte: new Date(endDate),
+          gte: this.parseDate(startDate), // [수정] UTC 강제 변환 유틸 사용
+          lte: this.parseDate(endDate),   // [수정] UTC 강제 변환 유틸 사용
         },
       },
       orderBy: { servTs: 'asc' },
@@ -75,8 +92,8 @@ export class PerformanceService {
     eqpid?: string,
     interval: number = 60,
   ) {
-    const start = new Date(startDate);
-    const end = new Date(endDate);
+    const start = this.parseDate(startDate); // [수정] UTC 강제 변환 유틸 사용
+    const end = this.parseDate(endDate);     // [수정] UTC 강제 변환 유틸 사용
 
     let filterSql = Prisma.sql`
       WHERE p.process_name LIKE '%Agent%' 
@@ -94,7 +111,6 @@ export class PerformanceService {
       filterSql = Prisma.sql`${filterSql} AND r.sdwt IN (SELECT sdwt FROM public.ref_sdwt WHERE site = ${site})`;
     }
 
-    // [수정] public.agent_info 테이블의 app_ver 컬럼 조회
     const results = await this.prisma.$queryRaw`
       SELECT 
         to_timestamp(floor(extract(epoch from p.serv_ts) / ${interval}) * ${interval}) as timestamp,
