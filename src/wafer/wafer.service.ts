@@ -573,9 +573,9 @@ export class WaferService {
 
     if (items.length > 0) {
       const eqpIds = [...new Set(items.map(i => i.eqpid))];
-      const datetimes = items.map(i => i.datetime).filter(d => d !== null) as Date[];
+      const datetimes = items.map(i => i.datetime).filter(d => d !== null);
       
-      const lotIds = [...new Set(items.map(i => i.lotid))].filter(l => l !== null) as string[];
+      const lotIds = [...new Set(items.map(i => i.lotid))].filter(l => l !== null);
       const waferIds = [...new Set(items.map(i => i.waferid))].filter(w => w !== null).map(String);
 
       const [maps, spectrums] = await Promise.all([
