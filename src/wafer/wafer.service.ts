@@ -446,8 +446,7 @@ export class WaferService {
         tableName = `public.plg_onto_spectrum_y${tYear}m${mm}`;
       }
 
-      // [수정] Short Year 적용 (YY-MM-DD)
-      const tsRaw = this.toShortYearDate(ts);
+      const tsDate = typeof ts === 'string' ? new Date(ts) : ts;
 
       const results = await this.prisma.$queryRawUnsafe<SpectrumRawResult[]>(
         `SELECT "wavelengths", "values" 
@@ -463,7 +462,7 @@ export class WaferService {
         String(waferId),
         Number(pointId),
         eqpId,
-        tsRaw,
+        tsDate,
       );
 
       if (!results || results.length === 0) return null;
